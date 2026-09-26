@@ -180,6 +180,14 @@ ARG UUPD_SHA256=c7463f193cd35b92cde2ee05496501d6ac13808899bd26e17e027b7ee9ee1acc
 # verify the units against their own digests too; all four ARGs move together.
 ARG UUPD_SERVICE_SHA256=65dd2b64dcb6a9f77227612aa624ef17fe43b32eb835b51d7d22a22755dc21a8
 ARG UUPD_TIMER_SHA256=bbb5f098ec33d047bdef571e0bc112364df157e0f92d73e0febab703c4a3c099
+# ChairLift (Control Center) is a user-scoped Homebrew cask, which cannot place
+# root-owned files. The image ships its system side from the same release
+# archive: the fixed-path privileged helper (pinned by the policy's exec.path),
+# that PolicyKit policy, and the GSettings schemas. Keep this release in step
+# with the cask's version (ublue-os/homebrew-tap Casks/chairlift.rb). The
+# bootc policy and /usr/share/chairlift/config.yml come from common.
+ARG CHAIRLIFT_VERSION=26.09.0-alpha.2
+ARG CHAIRLIFT_SHA256=18f630bb7de0e921ba12ae8c0650adf5e550b0cde203938d73d534382f196d08
 
 # Hummingbird defaults to a server preset and disables unlisted services.
 # configure-services is the Utah equivalent of bluefin-lts's 40-services.sh:
@@ -206,6 +214,20 @@ RUN mkdir -p /tmp/uupd && \
       -o /tmp/uupd/uupd.timer && \
     echo "${UUPD_SERVICE_SHA256}  /tmp/uupd/uupd.service" | sha256sum --check --strict && \
     echo "${UUPD_TIMER_SHA256}  /tmp/uupd/uupd.timer" | sha256sum --check --strict && \
+    mkdir -p /tmp/chairlift && \
+    curl -fsSL "https://github.com/projectbluefin/chairlift/releases/download/v${CHAIRLIFT_VERSION}/chairlift_${CHAIRLIFT_VERSION}_linux_amd64.tar.gz" \
+      -o /tmp/chairlift/chairlift.tar.gz && \
+    echo "${CHAIRLIFT_SHA256}  /tmp/chairlift/chairlift.tar.gz" | sha256sum --check --strict && \
+    tar -xzf /tmp/chairlift/chairlift.tar.gz -C /tmp/chairlift \
+      chairlift-ublue-helper \
+      data/io.projectbluefin.chairlift.ublue.policy \
+      data/io.projectbluefin.chairlift.livery.gschema.xml \
+      data/io.projectbluefin.chairlift.updates.gschema.xml \
+      data/io.projectbluefin.chairlift.firstrun.gschema.xml && \
+    install -Dm0755 /tmp/chairlift/chairlift-ublue-helper /usr/bin/chairlift-ublue-helper && \
+    install -Dm0644 -t /usr/share/polkit-1/actions /tmp/chairlift/data/io.projectbluefin.chairlift.ublue.policy && \
+    install -Dm0644 -t /usr/share/glib-2.0/schemas /tmp/chairlift/data/io.projectbluefin.chairlift.*.gschema.xml && \
+    rm -rf /tmp/chairlift && \
     /usr/local/libexec/utah-build-gnome-extensions && \
     /usr/local/libexec/utah-verify-gnome-extensions && \
     glib-compile-schemas /usr/share/glib-2.0/schemas && \
