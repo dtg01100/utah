@@ -128,16 +128,28 @@ jobs:
         run: |
           set -euo pipefail
           ref="ghcr.io/${REPO_ORGANIZATION,,}/utah-kernel-cache:$(./scripts/kernel-cache-tag.sh)"
-          if podman pull -q "$ref" >/dev/null 2>&1; then
-            echo "Cache hit: $ref is already published"
-            echo "available=true" >> "$GITHUB_OUTPUT"
-            digest="$(podman image inspect --format '{{ index .RepoDigests 0 }}' "$ref" | cut -d@ -f2)"
-            cosign verify "ghcr.io/${REPO_ORGANIZATION,,}/utah-kernel-cache@${digest}" \
+          verify() {
+            cosign verify "ghcr.io/${REPO_ORGANIZATION,,}/utah-kernel-cache@${1}" \
               --certificate-oidc-issuer https://token.actions.githubusercontent.com \
               --certificate-identity-regexp '^https://github\.com/projectbluefin/utah/\.github/workflows/build\.yml@refs/(heads/testing|pull/[0-9]+/merge)$'
-            exit 0
+          }
+          if podman pull -q "$ref" >/dev/null 2>&1; then
+            digest="$(podman image inspect --format '{{ index .RepoDigests 0 }}' "$ref" | cut -d@ -f2)"
+            if verify "$digest"; then
+              echo "Cache hit: $ref is published and signed"
+              echo "available=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            # An unsigned or wrongly-signed cache image is never adopted as a
+            # base: discard it and rebuild from this checkout, so the tag ends
+            # up carrying bytes this workflow produced and signed. This is also
+            # how the tags that predate signing are retired -- without it the
+            # first run after that change can never go green.
+            echo "::warning title=unsigned kernel cache::$ref@$digest is not signed by this workflow; rebuilding and re-signing it"
+            podman rmi -f "$ref" >/dev/null 2>&1 || true
+          else
+            echo "Cache miss: building $ref"
           fi
-          echo "Cache miss: building $ref"
           podman build --tag "$ref" --file Containerfile.kernel .
           # A pull request from a fork gets a read-only GITHUB_TOKEN, so the
           # push fails no matter how well the kernel built:
@@ -157,6 +169,7 @@ jobs:
           podman push "$ref"
           digest="$(podman image inspect --format '{{ index .RepoDigests 0 }}' "$ref" | cut -d@ -f2)"
           cosign sign --yes "ghcr.io/${REPO_ORGANIZATION,,}/utah-kernel-cache@${digest}"
+          verify "$digest"
           echo "available=true" >> "$GITHUB_OUTPUT"
 
   # main starts the moment the contract check passes. It never pulls the kernel
