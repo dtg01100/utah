@@ -91,6 +91,10 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # cosign sign --yes needs the GitHub OIDC token to mint the signing
+      # certificate; without id-token: write the cache image is pushed but
+      # never signed, so the verification below can never pass.
+      id-token: write
     outputs:
       # Whether the flavored builds can pull the cache image. False on a fork
       # pull request, where the kernel is compiled but cannot be published.
@@ -111,6 +115,8 @@ jobs:
           # only the push needs credentials, and a fork PR has none to give.
           echo "$GITHUB_TOKEN" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin \
             || echo "::warning title=ghcr login failed::continuing; a cache hit can still be read anonymously"
+      - name: Install cosign
+        uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159 # v3.9.2
       - name: Build the kernel cache image if it is not published yet
         id: cache
         env:
@@ -125,6 +131,10 @@ jobs:
           if podman pull -q "$ref" >/dev/null 2>&1; then
             echo "Cache hit: $ref is already published"
             echo "available=true" >> "$GITHUB_OUTPUT"
+            digest="$(podman image inspect --format '{{ index .RepoDigests 0 }}' "$ref" | cut -d@ -f2)"
+            cosign verify "ghcr.io/${REPO_ORGANIZATION,,}/utah-kernel-cache@${digest}" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              --certificate-identity-regexp '^https://github\.com/projectbluefin/utah/\.github/workflows/build\.yml@refs/(heads/testing|pull/[0-9]+/merge)$'
             exit 0
           fi
           echo "Cache miss: building $ref"
@@ -145,6 +155,8 @@ jobs:
             exit 0
           fi
           podman push "$ref"
+          digest="$(podman image inspect --format '{{ index .RepoDigests 0 }}' "$ref" | cut -d@ -f2)"
+          cosign sign --yes "ghcr.io/${REPO_ORGANIZATION,,}/utah-kernel-cache@${digest}"
           echo "available=true" >> "$GITHUB_OUTPUT"
 
   # main starts the moment the contract check passes. It never pulls the kernel

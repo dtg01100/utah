@@ -277,6 +277,17 @@ build-ghcr base_name stream flavor kernel_pin="":
     if [ "{{ flavor }}" != main ]; then
       cache_ref="$(./scripts/kernel-cache-tag.sh)"
       cache_ref="ghcr.io/{{ repo_organization }}/{{ kernel_cache_image }}:${cache_ref}"
+      # The content-hash tag commits to the build inputs, not to the pushed
+      # bytes: the kernel_cache job (build.yml) cosign-signs the image at the
+      # digest the tag resolves to. Verify that signature here, before the tag
+      # becomes the image base, so a forged cache image fails the build rather
+      # than being layered into every kernel flavor. Local dev builds use a
+      # localhost/ ref, which is not signed and is skipped.
+      if [[ "$cache_ref" == ghcr.io/* ]] && command -v cosign >/dev/null 2>&1; then
+        cosign verify "$cache_ref" \
+          --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+          --certificate-identity-regexp '^https://github\.com/projectbluefin/utah/\.github/workflows/build\.yml@refs/(heads/testing|pull/[0-9]+/merge)$'
+      fi
       base_args=(--build-arg BASE_IMAGE="$cache_ref")
     fi
     # Registry layer cache, the same arrangement Bluefin uses.  The package
