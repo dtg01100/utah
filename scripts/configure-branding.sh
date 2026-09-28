@@ -69,6 +69,15 @@ set_os_release IMAGE_ID "${IMAGE_ID}"
 set_os_release IMAGE_VERSION "${VERSION}"
 set_os_release BUILD_ID "${SHA_HEAD_SHORT}"
 
+# The About panel reads the OS identity from /etc/os-release, not /usr/lib/os-
+# release. On some bases /etc/os-release is a regular file rather than a symlink
+# to /usr/lib/os-release, in which case the edits above never reach it and the
+# About page still shows the base name. Copy the finished identity across so the
+# desktop reflects Utah regardless of which layout the base ships.
+if [ -f /etc/os-release ] && [ ! -L /etc/os-release ]; then
+    cp -f /usr/lib/os-release /etc/os-release
+fi
+
 # Fedora's bootloader helper still keys its vendor directory off EFIDIR after
 # the distribution ID changes.
 if [ -f /usr/sbin/grub2-switch-to-blscfg ]; then
