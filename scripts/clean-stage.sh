@@ -76,8 +76,16 @@ done
 # function of its content alone, not the CI wall-clock (utah#313). The value is
 # a fixed epoch, identical for every build, so the digest no longer depends on
 # when the build ran.
+#
+# -h is load-bearing: without it touch follows symlinks, and a real image tree
+# is full of links whose target is not in the image -- /usr/lib/bootc/storage,
+# /usr/share/licenses/malcontent/COPYING, the 32-bit libstdc++.a stubs. touch
+# then reports "No such file or directory" per broken link and exits non-zero,
+# which under `set -e` kills the whole build layer. -h stamps the link itself,
+# which is also the mtime that lands in the tar header, so it is the correct
+# target here and not merely a way to dodge the error.
 SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-1704067200}"
 for base in usr etc; do
     [ -d "${CLEAN_ROOT:?}/${base}" ] || continue
-    find "${CLEAN_ROOT}/${base}" -exec touch -d "@${SOURCE_DATE_EPOCH}" {} +
+    find "${CLEAN_ROOT}/${base}" -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
 done

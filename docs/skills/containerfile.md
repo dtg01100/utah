@@ -176,7 +176,12 @@ across layers, so any wall-clock mtime in a tar header changes that layer's
 digest. A rebuild that changes nothing must produce an identical image
 (utah#313). This normalization lands in `utah-clean-stage`, the final layer,
 because chunkah reads the merged rootfs -- a touch there is the last write, so
-it wins over the wall-clock mtimes the package and extension steps left.
+it wins over the wall-clock mtimes the package and extension steps left. The
+`touch` must pass `-h`: the tree carries symlinks whose target is not in the
+image (`/usr/lib/bootc/storage`, the malcontent `COPYING` links, the 32-bit
+`libstdc++.a` stubs), and a dereferencing `touch` exits non-zero on each one
+and fails the layer under `set -e`. `-h` stamps the link itself, which is the
+mtime the tar header carries anyway.
 The same principle applies at the source: `build-gnome-extensions.sh` removes
 GSConnect's `_build/` after `meson install`, exactly as it already removes
 Blur My Shell's `build/`, so the timestamped artifact never reaches the image

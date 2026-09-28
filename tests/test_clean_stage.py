@@ -78,6 +78,14 @@ def build_tree(root: Path) -> None:
     (txn / "transaction_history.sqlite").write_bytes(b"sqlite\n")
     (txn / "transaction_history.sqlite-shm").write_bytes(b"shm\n")
     (txn / "transaction_history.sqlite-wal").write_bytes(b"wal\n")
+    # Symlinks whose target is not in the image. Real builds are full of them:
+    # /usr/lib/bootc/storage, /usr/share/licenses/malcontent/COPYING and the
+    # 32-bit libstdc++.a stubs all dangle in the committed tree.
+    (root / "usr/share/licenses/malcontent").mkdir(parents=True)
+    (root / "usr/share/licenses/malcontent/COPYING").symlink_to(
+        "../../doc/malcontent/COPYING")
+    (root / "usr/lib/bootc").mkdir(parents=True)
+    (root / "usr/lib/bootc/storage").symlink_to("/sysroot/ostree/bootc/storage")
 
 
 def clean(root: Path) -> subprocess.CompletedProcess:
@@ -217,6 +225,27 @@ class CleanStageTests(unittest.TestCase):
             self.assertFalse(
                 (base / name).exists(),
                 f"{name} should have been removed",
+            )
+
+    def test_dangling_symlinks_do_not_fail_the_build(self):
+        """A committed tree contains symlinks whose target is not in the image
+        -- /usr/lib/bootc/storage, the malcontent COPYING links, the 32-bit
+        libstdc++.a stubs. `touch` follows symlinks by default, so it reported
+        "No such file or directory" for each one and exited non-zero, which
+        under `set -e` failed the final Containerfile layer for every flavor.
+        clean-stage passes -h, stamping the link itself (utah#313)."""
+        self.assertCleanSucceeded()
+        for link in (
+            self.root / "usr/share/licenses/malcontent/COPYING",
+            self.root / "usr/lib/bootc/storage",
+        ):
+            self.assertTrue(link.is_symlink(), f"{link} should still be a symlink")
+            self.assertFalse(link.exists(), f"{link} should still dangle")
+            mtime = int(os.lstat(link).st_mtime)
+            self.assertEqual(
+                mtime,
+                SOURCE_DATE_EPOCH,
+                f"{link} was not pinned to SOURCE_DATE_EPOCH",
             )
 
     def test_absent_usr_and_etc_are_not_an_error(self):
