@@ -98,6 +98,11 @@ PY
 meson setup --prefix=/usr "${gsconnect_dir}" "${gsconnect_dir}/_build"
 meson install -C "${gsconnect_dir}/_build" --skip-subprojects
 # GSConnect installs schemas to /usr/share/glib-2.0/schemas and meson compiles them automatically
+# The _build directory records ninja's wall-clock timestamps in .ninja_log and
+# stays in the image, so its layer would churn on every rebuild even after
+# SOURCE_DATE_EPOCH normalises the files (utah#313). Blur My Shell removes its
+# build/ the same way; drop GSConnect's after install.
+rm -rf "${gsconnect_dir}/_build"
 
 # Assert the installed extension carries the guard
 test -f "${gsconnect_dir}/shell/clipboard.js"

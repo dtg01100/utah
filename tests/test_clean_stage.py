@@ -18,6 +18,7 @@ assert on the tree that survives.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import tempfile
 import unittest
@@ -25,6 +26,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "clean-stage.sh"
+SOURCE_DATE_EPOCH = 1704067200  # 2024-01-01T00:00:00Z, the epoch clean-stage pins to
 
 
 def build_tree(root: Path) -> None:
@@ -55,6 +57,27 @@ def build_tree(root: Path) -> None:
 
     (root / "utah-cache/kernel-rpms").mkdir(parents=True)
     (root / "utah-cache/kernel-rpms/kernel-7.1.8-ogc1.rpm").write_bytes(b"1.5 GB, pretend\n")
+    # The reproducible-build surface: /usr and /etc with files whose mtimes are
+    # deliberately far in the future, plus the dnf5 transaction history the
+    # script must drop. The mtime test asserts clean-stage pins the former to
+    # SOURCE_DATE_EPOCH and removes the latter (utah#313).
+    for directory in ("usr/bin", "usr/share/doc", "etc/systemd/system"):
+        (root / directory).mkdir(parents=True)
+    (root / "usr/bin/tool").write_text("binary\n")
+    (root / "usr/share/doc/readme").write_text("doc\n")
+    (root / "etc/systemd/system/foo.service").write_text("[Unit]\n")
+    # Year 2036 -- well after the epoch the script pins to -- so a failure to
+    # normalise is unmistakable rather than a coincidence with the target.
+    future = 2085840000
+    for path in (root / "usr/bin/tool", root / "usr/share/doc/readme",
+                 root / "etc/systemd/system/foo.service"):
+        os.utime(path, (future, future))
+    # dnf5's per-transaction SQLite database under the sysroot.
+    txn = root / "usr/lib/sysimage/libdnf5"
+    txn.mkdir(parents=True)
+    (txn / "transaction_history.sqlite").write_bytes(b"sqlite\n")
+    (txn / "transaction_history.sqlite-shm").write_bytes(b"shm\n")
+    (txn / "transaction_history.sqlite-wal").write_bytes(b"wal\n")
 
 
 def clean(root: Path) -> subprocess.CompletedProcess:
@@ -156,6 +179,57 @@ class CleanStageTests(unittest.TestCase):
             result = clean(root)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue((root / "var/marker").is_file())
+
+
+    def test_mtimes_under_usr_and_etc_are_pinned(self):
+        """A rebuild that changes nothing must commit identical layer digests.
+        dnf, meson and the extension build leave wall-clock mtimes under /usr
+        and /etc, and chunkah splits those directories across layers, so a
+        changed mtime in any tar header changes that layer's digest. clean-stage
+        pins every file and directory under /usr and /etc to SOURCE_DATE_EPOCH,
+        so a layer's digest is a function of its content alone (utah#313)."""
+        self.assertCleanSucceeded()
+        for path in (
+            self.root / "usr/bin/tool",
+            self.root / "usr/share/doc/readme",
+            self.root / "etc/systemd/system/foo.service",
+        ):
+            mtime = int(path.stat().st_mtime)
+            self.assertEqual(
+                mtime,
+                SOURCE_DATE_EPOCH,
+                f"{path} was not pinned to SOURCE_DATE_EPOCH",
+            )
+
+    def test_transaction_history_is_dropped(self):
+        """dnf5 records every transaction in usr/lib/sysimage/libdnf5/
+        transaction_history.sqlite (with its -shm and -wal companions). It is
+        build-time metadata -- nothing at runtime reads it -- and it carries a
+        wall-clock mtime plus an in-memory page cache, so it both wastes space
+        and churns the layer that carries it. clean-stage drops all three."""
+        self.assertCleanSucceeded()
+        base = self.root / "usr/lib/sysimage/libdnf5"
+        for name in (
+            "transaction_history.sqlite",
+            "transaction_history.sqlite-shm",
+            "transaction_history.sqlite-wal",
+        ):
+            self.assertFalse(
+                (base / name).exists(),
+                f"{name} should have been removed",
+            )
+
+    def test_absent_usr_and_etc_are_not_an_error(self):
+        """A tree without /usr or /etc must still exit zero: the normalisation
+        is scoped to the directories that exist, mirroring the /run and /tmp
+        guard the other absence test relies on."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            build_tree(root)
+            for directory in ("usr", "etc"):
+                subprocess.run(["rm", "-rf", str(root / directory)], check=True)
+            result = clean(root)
+            self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":

@@ -57,3 +57,27 @@ clear_dir "${CLEAN_ROOT:?}/tmp"
 # the four flavors would otherwise ship roughly 1.5 GB of tarballs they have
 # already unpacked. main never has this directory at all.
 rm -rf "${CLEAN_ROOT:?}/utah-cache"
+
+# dnf5 records every transaction in a SQLite database under the sysroot:
+# usr/lib/sysimage/libdnf5/transaction_history.sqlite (with its -shm and -wal
+# companions). It is build-time metadata -- nothing at runtime reads it -- and
+# it carries a wall-clock mtime plus an in-memory page cache, so it both wastes
+# space and churns the layer that carries it on every rebuild. Drop it the same
+# way the residue above is dropped (utah#313).
+for db in transaction_history.sqlite transaction_history.sqlite-shm transaction_history.sqlite-wal; do
+    rm -f "${CLEAN_ROOT:?}/usr/lib/sysimage/libdnf5/${db}"
+done
+
+# Reproducible builds: a rebuild that changes nothing must produce an identical
+# image. dnf, meson and the extension build write wall-clock mtimes into /usr
+# and /etc, and chunkah splits those directories across layers, so a changed
+# mtime in any tar header changes that layer's digest. Pin every file and
+# directory under /usr and /etc to SOURCE_DATE_EPOCH so a layer's digest is a
+# function of its content alone, not the CI wall-clock (utah#313). The value is
+# a fixed epoch, identical for every build, so the digest no longer depends on
+# when the build ran.
+SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-1704067200}"
+for base in usr etc; do
+    [ -d "${CLEAN_ROOT:?}/${base}" ] || continue
+    find "${CLEAN_ROOT}/${base}" -exec touch -d "@${SOURCE_DATE_EPOCH}" {} +
+done

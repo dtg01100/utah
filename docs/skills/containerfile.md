@@ -1,7 +1,7 @@
 ---
 name: containerfile
 version: "1.0"
-last_updated: "2026-09-26"
+last_updated: "2026-09-28"
 id: containerfile
 one_line_purpose: Edit the Containerfile without regressing layer count or cache hits.
 entry_point: docs/skills/containerfile.md
@@ -166,6 +166,22 @@ last package install, which is the NVIDIA and OGC step, not after the main
 transaction. The lint that checks the result runs in the same layer
 (`bootc container lint --fatal-warnings --skip nonempty-boot`): nothing can
 change between the two (comment, `Containerfile`).
+The same step also makes the image reproducible. It drops the dnf5 transaction
+history -- `usr/lib/sysimage/libdnf5/transaction_history.sqlite` and its
+`-shm`/`-wal` companions -- build-time metadata nothing reads at runtime, but
+it carries a wall-clock mtime that churns its layer on every rebuild. It then
+pins every file and directory under `/usr` and `/etc` to a fixed
+`SOURCE_DATE_EPOCH` (2024-01-01T00:00:00Z): chunkah splits those directories
+across layers, so any wall-clock mtime in a tar header changes that layer's
+digest. A rebuild that changes nothing must produce an identical image
+(utah#313). This normalization lands in `utah-clean-stage`, the final layer,
+because chunkah reads the merged rootfs -- a touch there is the last write, so
+it wins over the wall-clock mtimes the package and extension steps left.
+The same principle applies at the source: `build-gnome-extensions.sh` removes
+GSConnect's `_build/` after `meson install`, exactly as it already removes
+Blur My Shell's `build/`, so the timestamped artifact never reaches the image
+to be normalized downstream. Prefer dropping such a directory where it is made
+over re-touching it in `utah-clean-stage`.
 
 ## Verification
 
