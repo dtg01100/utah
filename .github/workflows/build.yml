@@ -88,6 +88,14 @@ jobs:
     # it is 45 minutes spent on an image nothing consumes.
     if: needs.contract.outputs.needs_kernel == 'true'
     runs-on: ubuntu-26.04
+    # cosign reads the Docker keychain (${DOCKER_CONFIG}/config.json); it never
+    # looks at podman's default authfile under ${XDG_RUNTIME_DIR}/containers.
+    # The two formats are identical, so pointing podman at the docker path
+    # gives both tools one credential store and lets cosign push the signature.
+    # Without this the image pushes and `cosign sign` fails UNAUTHORIZED.
+    env:
+      DOCKER_CONFIG: ${{ github.workspace }}/.docker
+      REGISTRY_AUTH_FILE: ${{ github.workspace }}/.docker/config.json
     permissions:
       contents: read
       packages: write
@@ -111,6 +119,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          mkdir -p "${DOCKER_CONFIG}"
           # Anonymous pulls are enough to check whether the tag is published;
           # only the push needs credentials, and a fork PR has none to give.
           echo "$GITHUB_TOKEN" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin \
@@ -166,8 +175,12 @@ jobs:
             echo "available=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          podman push "$ref"
-          digest="$(podman image inspect --format '{{ index .RepoDigests 0 }}' "$ref" | cut -d@ -f2)"
+          # --digestfile reports the digest the registry accepted. `podman image
+          # inspect ... RepoDigests` after a push reports the local manifest
+          # digest instead, which differs, so the signature landed on a digest
+          # that 404s on ghcr.io and the verify below could never pass.
+          podman push --digestfile "${RUNNER_TEMP}/kernel-cache.digest" "$ref"
+          digest="$(cat "${RUNNER_TEMP}/kernel-cache.digest")"
           cosign sign --yes "ghcr.io/${REPO_ORGANIZATION,,}/utah-kernel-cache@${digest}"
           verify "$digest"
           echo "available=true" >> "$GITHUB_OUTPUT"
