@@ -13,9 +13,9 @@ ExecStartPre=/usr/bin/mkdir -p /var/lib/flatpak
 # remote-delete carries the `-` prefix. That is deliberately preferred over
 # SuccessExitStatus=1: the latter also swallows a real exit 1 from the
 # `touch` below, hiding a failure to stamp .fedora-initialized.
-# No --force: a non-interactive run with installed refs would otherwise prompt
-# and default to no, which is the behaviour we want to keep. See
-# docs/skills/desktop-contract.md.
+# No --force: with installed refs present, remote-delete fails with
+# remote-in-use and exits 1, which the `-` prefix ignores. That leaves those
+# apps attached to their origin. See docs/skills/desktop-contract.md.
 ExecStart=-/usr/bin/flatpak remote-delete --system fedora
 ExecStart=-/usr/bin/flatpak remote-delete --system fedora-testing
 # Make sure even if flatpak-add-fedora-repos.service  exists, it
