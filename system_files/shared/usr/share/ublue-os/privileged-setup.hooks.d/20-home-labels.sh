@@ -19,7 +19,7 @@ fi
 
 version-script-check home-labels privileged 1 || exit 0
 
-set -xe
+set -xeuo pipefail
 restorecon -RF /var/home
 
 # Record success only after the body ran, so a failing first-boot hook retries

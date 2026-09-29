@@ -53,9 +53,10 @@ class HomeLabelsHookContractTests(unittest.TestCase):
     def test_body_failure_aborts_before_the_commit(self):
         # `set -e` is what makes a failing restorecon stop the hook instead of
         # running on to record a completion that never happened.
-        self.assertIn("set -xe", self.lines)
+        self.assertIn("set -xeuo pipefail", self.lines)
         self.assertLess(
-            self.lines.index("set -xe"), self.lines.index("restorecon -RF /var/home")
+            self.lines.index("set -xeuo pipefail"),
+            self.lines.index("restorecon -RF /var/home"),
         )
 
     def test_compat_shim_covers_pre_1196_libsetup(self):

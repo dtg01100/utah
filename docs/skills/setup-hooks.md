@@ -60,7 +60,7 @@ Two consequences to keep in mind when writing the body:
 ## Compat shim
 
 The pinned common image has no `version-script-check`/`version-script-commit`
-until #1196 lands, in either merge order each hook defines a shim:
+until projectbluefin/common#1196 lands, in either merge order each hook defines a shim:
 
 ```bash
 if ! declare -F version-script-check >/dev/null; then
