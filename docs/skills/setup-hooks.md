@@ -60,7 +60,8 @@ Two consequences to keep in mind when writing the body:
 ## Compat shim
 
 The pinned common image has no `version-script-check`/`version-script-commit`
-until projectbluefin/common#1196 lands, in either merge order each hook defines a shim:
+until projectbluefin/common#1196 lands. Each hook therefore defines a shim so it
+works in either merge order:
 
 ```bash
 if ! declare -F version-script-check >/dev/null; then
@@ -68,6 +69,11 @@ if ! declare -F version-script-check >/dev/null; then
     version-script-commit() { :; }
 fi
 ```
+
+As of this writing only `20-home-labels.sh` carries the shim. The other Utah
+hooks (`10-tailscale.sh`, `11-framework-ucsi-workaround.sh`, `99-flatpaks.sh`,
+`user-setup.hooks.d/20-framework.sh`) still call the legacy `version-script`
+helper, pending #259.
 
 ## Tests
 

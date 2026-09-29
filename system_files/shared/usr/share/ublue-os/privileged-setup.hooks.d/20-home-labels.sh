@@ -4,6 +4,12 @@
 # every home directory were created as default_t, so accounts-daemon could not
 # add users and home directories carried the wrong type. /var persists across
 # updates, so a new image alone does not correct existing labels.
+#
+# A restorecon that fails persistently (a home directory on a mount that rejects
+# xattr relabel, for example) is never committed, so the full recursive relabel
+# of /var/home is retried on every boot. That retry is the intended contract
+# from common#1196, but it is a recurring cost on a machine that cannot complete
+# the relabel; there is no attempt cap.
 
 # shellcheck source=/dev/null
 source /usr/lib/ublue/setup-services/libsetup.sh
