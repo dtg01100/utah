@@ -288,17 +288,34 @@ def normalize_baseurl(url: str) -> str:
     A trailing slash and the case of the scheme and host are not a different
     origin -- "HTTPS://Packages.RedHat.COM/api/x" and
     "https://packages.redhat.com/api/x/" are the same repository, and failing
-    on that spelling would train people to stop reading the error. The path is
-    compared case-sensitively because it is not, on a case-sensitive server.
+    on that spelling would train people to stop reading the error. The two
+    spellings of a variable reference are not a different origin either, so
+    "${basearch}" and "$basearch" compare equal. The path is compared
+    case-sensitively because it is not, on a case-sensitive server.
     """
     value = url.strip().rstrip("/")
     if not value:
         return ""
+    value = re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", r"$\1", value)
     scheme, sep, rest = value.partition("://")
     if not sep:
         return value.lower()
     host, slash, path = rest.partition("/")
     return f"{scheme.lower()}://{host.lower()}{slash}{path}"
+
+
+def split_baseurls(raw: str) -> list[str]:
+    """Split a baseurl option into the origins DNF would fetch from.
+
+    DNF's baseurl is a list option: it accepts several URLs separated by
+    whitespace, commas or newlines, and fetches from every one of them. A pin
+    compared against the raw value as a single literal string would therefore
+    call a legitimate two-URL baseurl "not the pinned origin" and say nothing
+    about the reason. Splitting it first lets the caller require each origin to
+    be pinned on its own, which is the property that matters: no unpinned
+    mirror is reachable through an allowlisted id.
+    """
+    return [entry for entry in re.split(r"[\s,]+", raw.strip()) if entry]
 
 
 def repo_pin_errors(
@@ -324,7 +341,9 @@ def repo_pin_errors(
         section also declares rather than letting the baseurl override them, so
         a section that carries both still fetches from an unpinned origin; the
         indirection is rejected whether or not the pinned baseurl is present;
-      - a baseurl the manifest does not name for that id.
+      - a baseurl the manifest does not name for that id, or any single origin
+        in a multi-URL baseurl it does not name -- baseurl is a list option, so
+        every URL in it has to be pinned, not the string as a whole.
     An allowlisted id with no entry in the map is also a failure: it is the case
     where the pin was never written, and failing closed is what stops the
     manifest's silence from reading as approval.
@@ -365,11 +384,15 @@ def repo_pin_errors(
         )
         return errors
 
-    actual = normalize_baseurl(baseurl)
-    if actual not in {normalize_baseurl(url) for url in declared}:
+    pinned = {normalize_baseurl(url) for url in declared}
+    unpinned = [
+        url for url in split_baseurls(baseurl) if normalize_baseurl(url) not in pinned
+    ]
+    if unpinned:
+        listed = ", ".join(f"'{url}'" for url in unpinned)
         errors.append(
-            f"Repository '{section_name}' is enabled in {source} with baseurl "
-            f"'{baseurl}', which is not the pinned origin; expected one of: "
+            f"Repository '{section_name}' is enabled in {source} with unpinned "
+            f"baseurl {listed}; expected one of: "
             f"{', '.join(sorted(declared))}"
         )
     return errors

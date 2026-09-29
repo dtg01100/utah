@@ -128,7 +128,10 @@ the pinned `baseurl`, because DNF merges those mirrors with the `baseurl`
 instead of preferring it — and so is an allowlisted id with no pin at all:
 manifest silence is not approval. Comparison
 ignores a trailing slash and the case of the scheme and host, because those are
-not a different origin. Changing a repository's URL means changing the pin in
+not a different origin; it also treats `${basearch}` and `$basearch` as the same
+variable, and because `baseurl` is a list option it requires *every* URL in a
+multi-URL value to be pinned, not the value as one string. Changing a
+repository's URL means changing the pin in
 the same commit — a unit test asserts the two agree.
 
 The allowlist and origin checks answer *where* DNF may fetch from, not *how* it

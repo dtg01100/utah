@@ -61,7 +61,7 @@ class RepositoryBaseurlPinTests(unittest.TestCase):
         )
         self.assertEqual(len(errors), 1, errors)
         self.assertIn("'utah-packages'", errors[0])
-        self.assertIn("not the pinned origin", errors[0])
+        self.assertIn("unpinned baseurl", errors[0])
 
     def test_an_option_key_in_any_case_and_a_trailing_slash_are_the_same_origin(self):
         # What this actually exercises: configparser lowercases option keys, so
@@ -110,7 +110,83 @@ class RepositoryBaseurlPinTests(unittest.TestCase):
             parser, "hummingbird.repo", {"hummingbird"}, expected_baseurls=pins,
         )
         self.assertEqual(len(errors), 1, errors)
-        self.assertIn("not the pinned origin", errors[0])
+        self.assertIn("unpinned baseurl", errors[0])
+
+    def test_every_origin_in_a_multi_url_baseurl_must_be_pinned(self):
+        """baseurl is a list option, so DNF fetches from every URL in it.
+
+        Comparing the raw value as one literal string called a legitimate
+        two-URL baseurl "not the pinned origin" and said nothing about why.
+        Both pinned origins together pass; adding a third, unpinned one is
+        the failure, and the message names that URL rather than the whole value.
+        """
+        pins = {
+            "hummingbird": (
+                "https://packages.redhat.com/uhf/ubi9/appstream",
+                "https://packages.redhat.com/uhf/ubi9/anolis",
+            ),
+        }
+
+        def errors_for(baseurl: str) -> list[str]:
+            parser = configparser.ConfigParser(interpolation=None)
+            parser.read_string(
+                f"[hummingbird]\nname=hb\nenabled=1\nbaseurl={baseurl}\n"
+            )
+            return verifier.check_repo_sections(
+                parser, "hummingbird.repo", {"hummingbird"},
+                expected_baseurls=pins,
+            )
+
+        both_pinned = errors_for(
+            "https://packages.redhat.com/uhf/ubi9/appstream "
+            "https://packages.redhat.com/uhf/ubi9/anolis"
+        )
+        self.assertEqual(both_pinned, [])
+
+        # Comma-separated is the same list to DNF.
+        self.assertEqual(
+            errors_for(
+                "https://packages.redhat.com/uhf/ubi9/appstream,"
+                "https://packages.redhat.com/uhf/ubi9/anolis"
+            ),
+            [],
+        )
+
+        mixed = errors_for(
+            "https://packages.redhat.com/uhf/ubi9/appstream "
+            "https://evil.example.invalid/mirror"
+        )
+        self.assertEqual(len(mixed), 1, mixed)
+        self.assertIn(
+            "unpinned baseurl 'https://evil.example.invalid/mirror'", mixed[0]
+        )
+
+    def test_the_braced_and_bare_spellings_of_a_variable_are_the_same_origin(self):
+        """DNF accepts ${basearch} and $basearch alike, so a pin must too.
+
+        The shipped nvidia pin carries the bare spelling; a repository file
+        written with braces is the same origin, not a different one.
+        """
+        pins = {
+            "nvidia-container-toolkit": (
+                "https://nvidia.github.io/libnvidia-container/stable/rpm/$basearch",
+            ),
+        }
+        for spelling in ("$basearch", "${basearch}"):
+            with self.subTest(spelling=spelling):
+                parser = configparser.ConfigParser(interpolation=None)
+                parser.read_string(
+                    "[nvidia-container-toolkit]\nname=nvidia\nenabled=1\n"
+                    f"baseurl=https://nvidia.github.io/libnvidia-container/"
+                    f"stable/rpm/{spelling}\n"
+                )
+                self.assertEqual(
+                    verifier.check_repo_sections(
+                        parser, "nvidia-container.repo",
+                        {"nvidia-container-toolkit"}, expected_baseurls=pins,
+                    ),
+                    [],
+                )
 
     def test_an_allowlisted_repository_with_no_baseurl_fails(self):
         errors = self.policy_errors("[utah-packages]\nname=utah\nenabled=1\n")
@@ -187,7 +263,7 @@ class RepositoryBaseurlPinTests(unittest.TestCase):
                 {"utah-packages"}, root=root, expected_baseurls=self.PINS
             )
             self.assertEqual(len(errors), 1, errors)
-            self.assertIn("not the pinned origin", errors[0])
+            self.assertIn("unpinned baseurl", errors[0])
 
     def test_a_repo_file_under_any_reposdir_is_pinned(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -200,7 +276,7 @@ class RepositoryBaseurlPinTests(unittest.TestCase):
                 {"utah-packages"}, root=root, expected_baseurls=self.PINS
             )
             self.assertEqual(len(errors), 1, errors)
-            self.assertIn("not the pinned origin", errors[0])
+            self.assertIn("unpinned baseurl", errors[0])
 
     def test_the_manifest_pins_match_the_repo_files_they_describe(self):
         """A pin that drifts from packages/*.repo is a build failure, caught here."""

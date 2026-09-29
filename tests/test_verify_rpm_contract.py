@@ -401,7 +401,7 @@ class VerifyModeTests(unittest.TestCase):
                     manifest, overlay, {"bash"}, policy_root=policy_root
                 )
         self.assertEqual(code, 1)
-        self.assertIn("not the pinned origin", stderr.getvalue())
+        self.assertIn("unpinned baseurl", stderr.getvalue())
 
 
     def test_the_runtime_policy_root_rejects_a_secure_option_override(self) -> None:
