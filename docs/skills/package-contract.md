@@ -168,7 +168,9 @@ package contract changes. Its PR body includes the upstream diff; it never
 auto-merges, so maintainers can decide whether Utah's overlay needs adjustment.
 A PR opened with the default `GITHUB_TOKEN` gets no `on: pull_request` checks
 by default, so the workflow's last step explicitly dispatches
-`build.yml --ref automation/bluefin-parity` after opening or updating the PR,
+`build.yml --ref automation/bluefin-parity -f contract_only=true` after opening
+or updating the PR. That runs the contract gates without building, pushing or
+signing images from the unreviewed upstream set,
 which is what makes `just check-repos` catch a missing overlay source on the
 bump PR itself (see `docs/skills/ci-workflows.md`).
 
