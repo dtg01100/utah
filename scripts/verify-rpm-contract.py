@@ -38,6 +38,16 @@ from typing import Any
 # was one source, not the only one.
 NVIDIA_PACKAGES: tuple[str, ...] = ("nvidia-container-toolkit",)
 
+# The report's build stamp comes from SOURCE_DATE_EPOCH, the reproducible-builds
+# convention the build sets from the source commit date. With no stamp to read,
+# the report falls back to this fixed sentinel rather than the wall clock: the
+# report is retained in the image, so a wall-clock stamp would make
+# /usr/share/utah/package-origins.{json,txt} -- and the layer carrying it --
+# differ on every rebuild of byte-identical inputs. 1980-01-01 is the same
+# "no meaningful timestamp" sentinel zip and reproducible-build tooling use, and
+# a report built without a stamp says so through build_provenance.timestamp_source.
+DEFAULT_BUILD_EPOCH = 315532800
+
 # Where the retained package-origin/NEVRA report lands in a built image.
 # UTAH_REPORT_DIR redirects it, which is how the tests exercise the real writer
 # without touching the host's /usr/share/utah.
@@ -393,6 +403,40 @@ def verify_runtime_repository_policy(
     return errors
 
 
+def resolve_build_timestamp(environ: dict[str, str] | None = None) -> tuple[str, str]:
+    """Return the report's build stamp and where it was read from.
+
+    SOURCE_DATE_EPOCH wins; an absent, empty, unparseable or out-of-range value
+    falls back to the fixed sentinel so the retained report is byte-identical
+    across rebuilds either way. Falling back to the wall clock -- which is what
+    this did before -- put a different timestamp in the image on every build of
+    the same inputs, so the fallback is deterministic rather than merely
+    non-crashing. The fallback is announced on stderr, because a report whose
+    stamp is the sentinel is a report built without a stamp.
+    """
+    env = os.environ if environ is None else environ
+    raw = env.get("SOURCE_DATE_EPOCH", "").strip()
+    if raw:
+        try:
+            return (
+                datetime.fromtimestamp(int(raw), tz=timezone.utc).isoformat(),
+                "source-date-epoch",
+            )
+        except (ValueError, OverflowError, OSError):
+            reason = f"unusable SOURCE_DATE_EPOCH={raw!r}"
+    else:
+        reason = "SOURCE_DATE_EPOCH is unset"
+    print(
+        f"WARNING: {reason}; stamping the package-origin report with the fixed "
+        f"epoch {DEFAULT_BUILD_EPOCH} instead of the wall clock",
+        file=sys.stderr,
+    )
+    return (
+        datetime.fromtimestamp(DEFAULT_BUILD_EPOCH, tz=timezone.utc).isoformat(),
+        "sentinel-epoch",
+    )
+
+
 def generate_provenance_report(
     installed: dict[str, dict[str, Any]],
     flavor: str,
@@ -434,15 +478,7 @@ def generate_provenance_report(
                 for c in copies
             ]
 
-    if "SOURCE_DATE_EPOCH" in os.environ:
-        try:
-            timestamp = datetime.fromtimestamp(
-                int(os.environ["SOURCE_DATE_EPOCH"]), tz=timezone.utc
-            ).isoformat()
-        except (ValueError, OverflowError):
-            timestamp = datetime.now(timezone.utc).isoformat()
-    else:
-        timestamp = datetime.now(timezone.utc).isoformat()
+    timestamp, timestamp_source = resolve_build_timestamp()
 
     report: dict[str, Any] = {
         "build_provenance": {
@@ -450,6 +486,7 @@ def generate_provenance_report(
             "image": os.environ.get("IMAGE_NAME", "utah"),
             "version": os.environ.get("VERSION", "testing"),
             "timestamp": timestamp,
+            "timestamp_source": timestamp_source,
             "contract_packages": len(installed),
             "factory_packages_count": factory_count,
             "hummingbird_packages_count": hummingbird_count,

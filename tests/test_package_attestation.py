@@ -494,8 +494,76 @@ class PackageAttestationTests(unittest.TestCase):
             self.assertEqual(report["build_provenance"]["factory_packages_count"], 1)
             self.assertEqual(report["build_provenance"]["hummingbird_packages_count"], 1)
             self.assertEqual(report["build_provenance"]["timestamp"], "2024-09-10T20:26:40+00:00")
+            self.assertEqual(report["build_provenance"]["timestamp_source"], "source-date-epoch")
             self.assertIn("gnome-shell", report["packages"])
             self.assertEqual(report["packages"]["gnome-shell"]["nevra"], "gnome-shell-51~beta-1.hum1.bfin.x86_64")
+
+    # A retained report whose stamp is the wall clock makes the image layer
+    # carrying it differ on every rebuild of identical inputs. The stamp must be
+    # a function of the build's inputs or of nothing at all, never of the clock.
+    SENTINEL_STAMP = "1980-01-01T00:00:00+00:00"
+
+    def _one_package_installed(self) -> dict:
+        return {
+            "gnome-shell": {
+                "name": "gnome-shell",
+                "epoch": "0",
+                "version": "51~beta",
+                "release": "1.hum1.bfin",
+                "arch": "x86_64",
+                "nevra": "gnome-shell-51~beta-1.hum1.bfin.x86_64",
+                "origin": "factory",
+            }
+        }
+
+    def test_provenance_stamp_is_deterministic_without_source_date_epoch(self):
+        stamps = set()
+        for _ in range(2):
+            with tempfile.TemporaryDirectory() as tmp:
+                out_dir = Path(tmp)
+                # Environment genuinely without the variable, not merely patched
+                # to an empty value, because a missing key is the build's default.
+                with patch.dict("os.environ", {}, clear=True):
+                    report = verifier.generate_provenance_report(
+                        self._one_package_installed(),
+                        flavor="main",
+                        allowed_repos={"utah-packages"},
+                        package_sections={"gnome-shell": "gnome"},
+                        output_dir=out_dir,
+                    )
+                stamps.add((out_dir / "package-origins.json").read_text())
+                stamps.add((out_dir / "package-origins.txt").read_text())
+        self.assertEqual(
+            report["build_provenance"]["timestamp"], self.SENTINEL_STAMP
+        )
+        self.assertEqual(
+            report["build_provenance"]["timestamp_source"], "sentinel-epoch"
+        )
+        # Two builds, two files each, one content each: nothing in the retained
+        # report moves with the clock.
+        self.assertEqual(len(stamps), 2)
+
+    def test_provenance_stamp_falls_back_when_source_date_epoch_is_unusable(self):
+        for bad in ("", "   ", "not-a-number", "12.5", "1e9", "99999999999999999999"):
+            with self.subTest(source_date_epoch=bad):
+                timestamp, source = verifier.resolve_build_timestamp(
+                    {"SOURCE_DATE_EPOCH": bad}
+                )
+                self.assertEqual(timestamp, self.SENTINEL_STAMP)
+                self.assertEqual(source, "sentinel-epoch")
+
+    def test_provenance_stamp_reads_source_date_epoch(self):
+        timestamp, source = verifier.resolve_build_timestamp(
+            {"SOURCE_DATE_EPOCH": " 1726000000 "}
+        )
+        self.assertEqual(timestamp, "2024-09-10T20:26:40+00:00")
+        self.assertEqual(source, "source-date-epoch")
+
+    def test_provenance_stamp_never_reads_the_wall_clock(self):
+        # Any wall-clock fallback in the stamp path reintroduces the drift, so
+        # the module is checked for the call that would cause it.
+        source = (ROOT / "scripts" / "verify-rpm-contract.py").read_text()
+        self.assertNotIn("datetime.now(", source)
 
     def test_check_mode_validates_repo_policy_and_manifests(self):
         with patch("sys.argv", ["verify-rpm-contract", "--check", str(ROOT / "packages/bluefin.toml")]):

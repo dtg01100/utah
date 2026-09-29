@@ -141,6 +141,12 @@ ARG IMAGE_FLAVOR=main
 ARG IMAGE_VENDOR=projectbluefin
 ARG VERSION=testing
 ARG SHA_HEAD_SHORT=unknown
+# Build stamp for the retained package-origin report. Set from the source
+# commit's date by the build; 0 is the sentinel for "no stamp", which
+# verify-rpm-contract.py renders as a fixed epoch rather than the wall clock.
+# Declared here, with the other per-image arguments, so the stamp is part of
+# the cache key of the layer that writes the report.
+ARG SOURCE_DATE_EPOCH=0
 # Production images keep SSH closed; local VM diagnostics can opt in with
 # ENABLE_SSHD=1, following tunaOS's debug-image convention.
 ARG ENABLE_SSHD=0
@@ -197,6 +203,7 @@ RUN --mount=type=bind,from=packages,source=/repository,target=/etc/utah-packages
       nvidia|nvidia-gaming) /usr/local/libexec/utah-install-nvidia "${IMAGE_FLAVOR}" ;; \
       main|gaming) ;; \
     esac && \
+    SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH}" \
     IMAGE_FLAVOR="${IMAGE_FLAVOR}" /usr/local/libexec/utah-verify-rpm-contract \
       /usr/share/utah/bluefin.toml /usr/share/utah/utah.toml && \
     # The package repository is now only ever bind mounted, so it is absent from
