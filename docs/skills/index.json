@@ -128,6 +128,24 @@
       "doc_type": "policy"
     },
     {
+      "id": "setup-hooks",
+      "name": "setup-hooks",
+      "one_line_purpose": "Change a first-boot setup hook without breaking the once-only contract.",
+      "entry_point": "docs/skills/setup-hooks.md",
+      "category": "meta",
+      "status": "active",
+      "tags": [
+        "hooks",
+        "first-boot",
+        "version-script",
+        "libsetup"
+      ],
+      "description": "First-boot setup hooks stamp completion through libsetup.sh. Use when editing a hook, migrating one off the legacy `version-script` gate, or debugging a hook that never runs or runs every boot.",
+      "version": "1.0",
+      "last_updated": "2026-09-27",
+      "doc_type": "procedure"
+    },
+    {
       "id": "skill-improvement",
       "name": "skill-improvement",
       "one_line_purpose": "Capture durable agent learnings in maintained docs.",

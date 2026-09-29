@@ -8,7 +8,20 @@
 # shellcheck source=/dev/null
 source /usr/lib/ublue/setup-services/libsetup.sh
 
-version-script home-labels privileged 1 || exit 0
+# Compat shim: common libsetup.sh builds older than projectbluefin/common #1196
+# have only version-script, which records the version before the body runs, and
+# no version-script-check/version-script-commit pair. Fall back to that legacy
+# gate and make the commit a no-op, so this hook works against both contracts.
+if ! declare -F version-script-check >/dev/null; then
+    version-script-check() { version-script "$@"; }
+    version-script-commit() { :; }
+fi
 
-set -x
+version-script-check home-labels privileged 1 || exit 0
+
+set -xe
 restorecon -RF /var/home
+
+# Record success only after the body ran, so a failing first-boot hook retries
+# next boot instead of being permanently skipped (common #1196 new contract).
+version-script-commit home-labels privileged 1
