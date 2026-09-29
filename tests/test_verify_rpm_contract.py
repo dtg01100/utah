@@ -14,6 +14,7 @@ fallback), the filters applied to each, the duplicate-name assertion behind
 
 from __future__ import annotations
 
+import configparser
 import importlib.util
 import io
 import json
@@ -356,6 +357,100 @@ class VerifyModeTests(unittest.TestCase):
                 manifest, overlay, {"bash"}, policy_root=policy_root
             )
         self.assertEqual(code, 0, out)
+
+
+    def test_the_runtime_policy_root_rejects_a_secure_option_override(self) -> None:
+        """End to end: an allowlisted id that satisfies the id check can still be rerouted.
+
+        The section names an approved repository, so the allowlist and origin
+        checks pass. Only the option check says whether the fetch actually went
+        where the manifest approved, which is the finding this closes.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            manifest = write_manifest(directory, ["bash"])
+            overlay = write_overlay(directory)
+            policy_root = directory / "root"
+            (policy_root / "etc/yum.repos.d").mkdir(parents=True)
+            (policy_root / "etc/yum.repos.d/utah-packages.repo").write_text(
+                "[utah-packages]\nname=utah\nenabled=1\n"
+                "baseurl=file:///etc/utah-packages\n"
+                "proxy=http://proxy.example.invalid:3128\n"
+            )
+            stderr = io.StringIO()
+            with patch.object(sys, "stderr", stderr):
+                code, _ = self.run_main(
+                    manifest, overlay, {"bash"}, policy_root=policy_root
+                )
+            self.assertEqual(code, 1, stderr.getvalue())
+            self.assertIn("proxy=http://proxy.example.invalid:3128", stderr.getvalue())
+
+
+class RepositorySecurityOptionTests(unittest.TestCase):
+    """A pinned origin is not enough when the fetch can still be rerouted.
+
+    The allowlist and baseurl checks answer where DNF may fetch from; proxy= and
+    sslverify=0 change how it gets there, so a section that satisfies the origin
+    check can still reach an unpinned intermediary. These tests pin the option
+    check to the allowlisted, enabled sections it is meant to cover.
+    """
+
+    def setUp(self) -> None:
+        self.module = load_module()
+
+    def check(self, section: str, source: str = "utah-packages.repo") -> list[str]:
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.read_string(section)
+        return self.module.check_repo_sections(parser, source, {"utah-packages"})
+
+    def test_a_proxy_on_an_allowlisted_section_is_rejected(self) -> None:
+        errors = self.check(
+            "[utah-packages]\nname=utah\nenabled=1\n"
+            "baseurl=file:///etc/utah-packages\nproxy=http://proxy.example.invalid:3128\n"
+        )
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("proxy=http://proxy.example.invalid:3128", errors[0])
+        self.assertIn("utah-packages", errors[0])
+
+    def test_disabled_tls_verification_is_rejected(self) -> None:
+        for value in ("0", "false", "no", "off"):
+            with self.subTest(sslverify=value):
+                errors = self.check(
+                    "[utah-packages]\nname=utah\nenabled=1\n"
+                    f"baseurl=file:///etc/utah-packages\nsslverify={value}\n"
+                )
+                self.assertEqual(len(errors), 1, errors)
+                self.assertIn("sslverify=" + value, errors[0])
+
+    def test_kept_tls_verification_passes(self) -> None:
+        for section in (
+            "[utah-packages]\nname=utah\nenabled=1\n"
+            "baseurl=file:///etc/utah-packages\nsslverify=1\n",
+            "[utah-packages]\nname=utah\nenabled=1\n"
+            "baseurl=file:///etc/utah-packages\nsslverify=true\n",
+            # Absent means DNF's default, which verifies TLS.
+            "[utah-packages]\nname=utah\nenabled=1\nbaseurl=file:///etc/utah-packages\n",
+        ):
+            with self.subTest(section=section):
+                self.assertEqual(self.check(section), [])
+
+    def test_a_disabled_section_is_never_fetched_so_is_not_checked(self) -> None:
+        self.assertEqual(
+            self.check(
+                "[utah-packages]\nname=utah\nenabled=0\n"
+                "baseurl=file:///etc/utah-packages\n"
+                "proxy=http://proxy.example.invalid:3128\nsslverify=0\n"
+            ),
+            [],
+        )
+
+    def test_an_unapproved_section_keeps_the_allowlist_error_only(self) -> None:
+        errors = self.check(
+            "[random-repo]\nname=random\nenabled=1\n"
+            "baseurl=https://random.example.invalid/\nsslverify=0\n"
+        )
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("Unapproved repository", errors[0])
 
 
 class DuplicateViolationTests(unittest.TestCase):

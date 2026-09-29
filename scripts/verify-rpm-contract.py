@@ -247,6 +247,41 @@ def verify_hummingbird_parity(
     return errors
 
 
+def repo_security_option_errors(
+    section_name: str,
+    parser: configparser.ConfigParser,
+    source: str,
+) -> list[str]:
+    """Name the options that reroute or weaken an allowlisted repository's fetch.
+
+    The allowlist and the baseurl check answer *where* DNF may fetch from. They do
+    not answer *how*: ``proxy=`` sends every request through an origin the
+    manifest never approved, and ``sslverify=0`` accepts whatever certificate
+    that origin presents. An allowlisted section carrying the pinned baseurl plus
+    either option is still reachable through an unpinned intermediary, so both
+    are failures in their own right rather than a detail of the origin check.
+
+    A disabled section is never fetched, so it is not inspected here; neither is
+    an unapproved or Fedora section, whose presence already fails the allowlist.
+    """
+    errors: list[str] = []
+    proxy = parser.get(section_name, "proxy", fallback="").strip()
+    if proxy:
+        errors.append(
+            f"Allowlisted repository '{section_name}' is enabled in {source} with "
+            f"proxy={proxy}; a proxy routes fetches through an origin the allowlist "
+            "does not name"
+        )
+    sslverify = parser.get(section_name, "sslverify", fallback="").strip()
+    if sslverify.lower() in DISABLED_VALUES:
+        errors.append(
+            f"Allowlisted repository '{section_name}' is enabled in {source} with "
+            f"sslverify={sslverify}; disabling TLS verification accepts any "
+            "certificate the origin presents"
+        )
+    return errors
+
+
 def check_repo_sections(
     parser: configparser.ConfigParser,
     source: str,
@@ -260,6 +295,10 @@ def check_repo_sections(
             continue
         enabled = parser.get(section_name, "enabled", fallback="1")
         if is_repo_enabled(enabled):
+            if section_name in allowed_repos:
+                errors.extend(
+                    repo_security_option_errors(section_name, parser, source)
+                )
             baseurl = parser.get(section_name, "baseurl", fallback="").lower()
             is_fedora = (
                 "fedora" in section_name.lower()

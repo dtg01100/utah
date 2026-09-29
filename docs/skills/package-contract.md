@@ -1,7 +1,7 @@
 ---
 name: package-contract
-version: "1.1"
-last_updated: "2026-09-20"
+version: "1.2"
+last_updated: "2026-09-29"
 id: package-contract
 one_line_purpose: Maintain Bluefin package parity, supply-chain attestation, and repository policy.
 entry_point: docs/skills/package-contract.md
@@ -113,6 +113,17 @@ verification to fail immediately. `UTAH_POLICY_ROOT` re-roots the scan, which is
 how the unit tests attest a known filesystem rather than the DNF configuration
 of whatever machine runs them.
 
+The allowlist and origin checks answer *where* DNF may fetch from, not *how* it
+gets there. Two per-repository options reroute or weaken that fetch and are
+therefore failures on their own: `proxy=`, which sends every request through a
+host the manifest never approved, and `sslverify=0` (or its `false`/`no`/`off`
+spellings), which accepts whatever certificate that origin presents. An
+allowlisted repository that carries the pinned baseurl plus either option still
+reaches an unpinned intermediary, so `check_repo_sections` rejects both for
+every enabled allowlisted section. A disabled section is never fetched and is
+not inspected; an unapproved or Fedora section already fails the allowlist. An
+absent `sslverify` keeps DNF's verifying default and passes.
+
 The pinned package image is an RPM repository, not a runtime dependency: its
 contents are copied into the image so the package transaction is reproducible
 and does not depend on a mutable mirror (`Containerfile` L41-44).
@@ -200,6 +211,9 @@ releases or emit missing-module errors with empty kernel names.
 - A factory package resolving from Hummingbird or Fedora without `.bfin` is a
   **build failure**.
 - An unapproved or Fedora repository enabled at runtime is a **build failure**.
+- An enabled allowlisted repository that sets `proxy=` or `sslverify=0` is a
+  **build failure** — the fetch is rerouted or its TLS is not verified, so the
+  origin no longer decides where packages came from.
 - `[unavailable]` entries still present in the install set are a validation
   error (`install-packages.py --check`).
 - Drift in `packages/bluefin.toml` from upstream at `packages/.bluefin-parity-ref`
