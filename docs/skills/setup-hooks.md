@@ -23,8 +23,6 @@ metadata:
 
 Hooks live in two directories:
 
-- `system_files/shared/usr/share/ublue-os/system-setup.hooks.d/` — machine-wide,
-  runs as root.
 - `system_files/shared/usr/share/ublue-os/user-setup.hooks.d/` — runs per user.
 - `system_files/shared/usr/share/ublue-os/privileged-setup.hooks.d/` — runs via
   pkexec as root, when a privileged action is needed.
@@ -74,5 +72,6 @@ fi
 ## Tests
 
 `tests/test_setup_hook_version_contract.py` asserts the contract on
-`20-home-labels.sh`; run the suite with `just test`. `just check` shellchecks
-and syntax-checks every hook through `scripts/check-script-syntax.py`.
+`20-home-labels.sh`; run the suite with `just test`. `just check` syntax-checks
+every hook (`bash -n`) through `scripts/check-script-syntax.py`; there is no
+shellcheck gate in the Justfile or CI.
