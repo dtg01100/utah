@@ -153,11 +153,18 @@ attributes and source provenance for every contract package:
    (`git log -1 --format=%ct`) as a build ARG. The report is retained in the
    image, so a wall-clock stamp would make `package-origins.{json,txt}` — and
    the layer carrying it — differ on every rebuild of byte-identical inputs.
-   An unset, empty, unparseable or out-of-range `SOURCE_DATE_EPOCH` therefore
+   An unset, empty, zero, negative, unparseable or out-of-range
+   `SOURCE_DATE_EPOCH` therefore
    falls back to a fixed sentinel epoch (1980-01-01), never to the clock, and
    announces the fallback on stderr; the report says which of the two it used in
    `build_provenance.timestamp_source` (`source-date-epoch` or
-   `sentinel-epoch`). A unit test asserts the module contains no
+   `sentinel-epoch`). Zero is the Containerfile ARG's own default, so a build
+   that passes no stamp takes the sentinel path rather than recording
+   1970-01-01 as if it were a real stamp. The verifier's early, flavor-`main`
+   pass runs above the per-image ARGs and so runs with `--no-report`: it
+   verifies only, leaving the stamp and the retained report to the pass that
+   has a stamp to read, so the stderr warning really does mark a build without
+   one. A unit test asserts the module contains no
    `datetime.now(` call, so a wall-clock fallback cannot come back silently.
 
 ## Supply-chain download verification

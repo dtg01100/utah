@@ -123,10 +123,14 @@ RUN for pair in install-packages.py:utah-install-packages \
 # The package lists live in the manifests, not here.  When they were spelled
 # out in this RUN as well, the two copies drifted and the contract check was
 # asserting a different set than the install had asked for.
+# This pass runs above the per-image ARGs, so it has no SOURCE_DATE_EPOCH to
+# read: --no-report keeps it from writing a sentinel-stamped report (and warning
+# that the stamp is missing) on every build. The report is written by the
+# flavor-aware pass below, which does get the stamp.
 RUN --mount=type=bind,from=packages,source=/repository,target=/etc/utah-packages,ro \
     /usr/local/libexec/utah-install-packages \
       /usr/share/utah/bluefin.toml /usr/share/utah/utah.toml && \
-    IMAGE_FLAVOR=main /usr/local/libexec/utah-verify-rpm-contract \
+    IMAGE_FLAVOR=main /usr/local/libexec/utah-verify-rpm-contract --no-report \
       /usr/share/utah/bluefin.toml /usr/share/utah/utah.toml && \
     DNF="$(command -v dnf5 || command -v dnf)" && \
     "$DNF" clean all && rm -rf /var/cache/libdnf5 /var/cache/dnf

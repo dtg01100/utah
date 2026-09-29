@@ -544,13 +544,44 @@ class PackageAttestationTests(unittest.TestCase):
         self.assertEqual(len(stamps), 2)
 
     def test_provenance_stamp_falls_back_when_source_date_epoch_is_unusable(self):
-        for bad in ("", "   ", "not-a-number", "12.5", "1e9", "99999999999999999999"):
+        # "0" is the Containerfile ARG's own default: an unstamped build must
+        # take the sentinel path, not record 1970-01-01 as a real stamp.
+        for bad in (
+            "",
+            "   ",
+            "0",
+            " 0 ",
+            "-1",
+            "not-a-number",
+            "12.5",
+            "1e9",
+            "99999999999999999999",
+        ):
             with self.subTest(source_date_epoch=bad):
                 timestamp, source = verifier.resolve_build_timestamp(
                     {"SOURCE_DATE_EPOCH": bad}
                 )
                 self.assertEqual(timestamp, self.SENTINEL_STAMP)
                 self.assertEqual(source, "sentinel-epoch")
+
+    def test_containerfile_pre_arg_pass_writes_no_report(self):
+        # The flavor-main pass runs above `ARG SOURCE_DATE_EPOCH`, so it has no
+        # stamp to read. Without --no-report it would warn about a missing stamp
+        # and write a sentinel report on every build, both of which the
+        # report-writing pass below then contradicts.
+        lines = (ROOT / "Containerfile").read_text().splitlines()
+        arg_line = next(
+            i for i, line in enumerate(lines) if line.startswith("ARG SOURCE_DATE_EPOCH")
+        )
+        calls = [
+            (i, line)
+            for i, line in enumerate(lines)
+            if "/usr/local/libexec/utah-verify-rpm-contract" in line
+        ]
+        self.assertTrue(calls)
+        for index, line in calls:
+            with self.subTest(line=line.strip()):
+                self.assertEqual("--no-report" in line, index < arg_line)
 
     def test_provenance_stamp_reads_source_date_epoch(self):
         timestamp, source = verifier.resolve_build_timestamp(
