@@ -1,7 +1,7 @@
 ---
 name: desktop-contract
 version: "1.0"
-last_updated: "2026-09-22"
+last_updated: "2026-09-30"
 id: desktop-contract
 one_line_purpose: Maintain Utah identity, Bluefin desktop defaults, and first-boot Flatpak policy.
 entry_point: docs/skills/desktop-contract.md
@@ -87,6 +87,16 @@ only changes the "remote has installed refs" guard, so on a non-interactive
 rebase it deletes the `fedora` remote *along with* the apps installed from it,
 leaving those refs with no origin to update from. The `-` prefix alone already
 covers the missing-remote case.
+
+This rule is enforced, not just documented:
+`tests/test_systemd_exit_tolerance.py` scans every unit shipped under
+`system_files/` and `iso/live/` and fails if one carries a
+`SuccessExitStatus=`, an unprefixed `remote-delete`, or a `--force` on one. It
+runs inside `just test`, which `just check` invokes, so the `--force` variant
+of a `remote-delete` fails the build instead of waiting to be caught in review.
+The scan covers unit files only: a shell script may still use `--force` on a
+throwaway remote it created itself, as `iso/live/src/install-flatpaks.sh` does
+for the live image's own `installer-local` remote.
 
 ## GNOME extensions are pinned submodules
 
