@@ -63,13 +63,54 @@ class RepositoryBaseurlPinTests(unittest.TestCase):
         self.assertIn("'utah-packages'", errors[0])
         self.assertIn("not the pinned origin", errors[0])
 
-    def test_a_trailing_slash_and_host_case_are_the_same_origin(self):
+    def test_an_option_key_in_any_case_and_a_trailing_slash_are_the_same_origin(self):
+        # What this actually exercises: configparser lowercases option keys, so
+        # `BASEURL=` reads as `baseurl=`, and a trailing slash is not a different
+        # origin. It says nothing about host case -- that is the test below.
         self.assertEqual(
             self.policy_errors(
                 "[utah-packages]\nname=utah\nenabled=1\nBASEURL=file:///etc/utah-packages/\n"
             ),
             [],
         )
+
+    def test_scheme_and_host_case_are_the_same_origin(self):
+        # `normalize_baseurl` lowercases the scheme and the host but compares the
+        # path case-sensitively. Without this case the whole branch is untested,
+        # and a typo there would start rejecting a spelling that is in fact the
+        # same repository.
+        pins = {"hummingbird": ("https://packages.redhat.com/uhf/ubi9/appstream",)}
+        for spelling in (
+            "https://packages.redhat.com/uhf/ubi9/appstream",
+            "HTTPS://Packages.RedHat.COM/uhf/ubi9/appstream",
+            "https://packages.redhat.com/uhf/ubi9/appstream/",
+        ):
+            with self.subTest(spelling=spelling):
+                parser = configparser.ConfigParser(interpolation=None)
+                parser.read_string(
+                    f"[hummingbird]\nname=hb\nenabled=1\nbaseurl={spelling}\n"
+                )
+                self.assertEqual(
+                    verifier.check_repo_sections(
+                        parser, "hummingbird.repo", {"hummingbird"},
+                        expected_baseurls=pins,
+                    ),
+                    [],
+                )
+
+    def test_a_path_case_difference_is_not_the_same_origin(self):
+        # The other half of the branch: only scheme and host are case-folded.
+        pins = {"hummingbird": ("https://packages.redhat.com/uhf/ubi9/appstream",)}
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.read_string(
+            "[hummingbird]\nname=hb\nenabled=1\n"
+            "baseurl=https://packages.redhat.com/UHF/ubi9/appstream\n"
+        )
+        errors = verifier.check_repo_sections(
+            parser, "hummingbird.repo", {"hummingbird"}, expected_baseurls=pins,
+        )
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("not the pinned origin", errors[0])
 
     def test_an_allowlisted_repository_with_no_baseurl_fails(self):
         errors = self.policy_errors("[utah-packages]\nname=utah\nenabled=1\n")
