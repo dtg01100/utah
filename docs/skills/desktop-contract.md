@@ -65,6 +65,15 @@ The TOML's sections are the contract's table of contents:
   symlinks that bypass uupd staging or undo manual rollbacks. Switchers can
   also manually verify or mask them if a local `/etc` symlink was preserved.
 
+  Unit files tolerate an expected non-zero exit per command with the `ExecStart=-`
+  prefix instead of `SuccessExitStatus=`. `SuccessExitStatus=1` is unit-wide, so
+  it also masks a genuine failure from a later command in the same unit — for
+  example the `touch` in `flatpak-nuke-fedora.service` that stamps
+  `/var/lib/flatpak/.fedora-initialized`. A unit that must ignore a remote or a
+  file possibly being absent takes `ExecStart=-` on that command only, and
+  creates its parent directory in an `ExecStartPre=` (`/var/lib/flatpak` is
+  absent on a freshly installed image, so the stamp would otherwise fail).
+
 ## GNOME extensions are pinned submodules
 
 Bluefin's GNOME extension submodules are retained with their normal build
