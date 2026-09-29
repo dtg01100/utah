@@ -91,9 +91,7 @@ packages = [
 # ALSA use-case profiles, the language pack and the core font set.
 #
 # Left out, with the dependency the pinned repositories do not carry:
-#   default-fonts-core-emoji   needs google-noto-emoji-color-fonts
-#   default-fonts-core-math    needs stix-fonts (both utah-packages#147)
-#   alsa-utils                 in no repository (utah-packages#146)
+#   default-fonts-core-math    needs stix-fonts (utah-packages#147)
 #
 # Wi-Fi, printing, fingerprint login and PDF tools arrived with the factory
 # image published 2026-09-25 (sha256:9e17ca2c), the first publish since
@@ -102,6 +100,14 @@ packages = [
 # poppler-data. NetworkManager-wifi comes from Hummingbird and needs
 # wireless-regdb and wpa_supplicant; firmware is the other half and lives in
 # [hardware] below -- the radio needs both.
+#
+# default-fonts-core-emoji joins the contract here (#290): its dependency
+# google-noto-emoji-color-fonts is provided by utah-packages'
+# google-noto-color-emoji-fonts recipe, imported in utah-packages#199
+# (resolves utah-packages#147) and confirmed present in the pinned package
+# image's repodata. Without it, colour emoji fell back to whatever symbol
+# font matched, which in GNOME 51 mostly meant empty boxes in chats and web
+# content.
 #
 # unzip is also in [build]; it is listed here because configure-services.sh
 # removes the build tooling after the extension build, and Bluefin ships
@@ -120,12 +126,18 @@ packages = [
     "NetworkManager-bluetooth",
     "bind-utils",
     "iptables-nft",
-    # Audio
+    # Audio. alsa-ucm only carries the ALSA use-case profiles; alsa-utils
+    # provides alsactl plus the alsa-restore/alsa-state units that persist the
+    # kernel mixer state across reboots. Without them hardware whose power-on
+    # mixer defaults are muted or mis-routed boots with broken sound -- the
+    # Dakota parity gap this resolves (utah-packages#146, now published).
     "alsa-ucm",
+    "alsa-utils",
     # Locale and fonts
     "langpacks-en",
     "langpacks-fonts-en",
     "abattis-cantarell-fonts",
+    "default-fonts-core-emoji",
     "default-fonts-core-sans",
     "default-fonts-core-serif",
     "default-fonts-core-mono",

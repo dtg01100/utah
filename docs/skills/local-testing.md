@@ -186,12 +186,13 @@ Production live boot entries configure:
   require either disabling Secure Boot or manually enrolling a Machine Owner Key
   (MOK) into UEFI NVRAM using `mokutil` (planned tooling; no automated helper
   currently exists in-tree).
-- **Custom flavor modules (`nvidia`, `nvidia-gaming`)**: Out-of-tree NVIDIA
-  kernel modules compiled against the base or OGC kernel run under kernel
-  lockdown when Secure Boot is active. Unsigned modules fail to load; signing
-  modules with an enrolled MOK key (e.g. via the kernel's `sign-file` utility)
-  is planned for future release pipelines, but currently module signing is not
-  implemented in-tree and Secure Boot must remain disabled.
+- **Custom flavor modules (`nvidia`, `nvidia-gaming`) and v4l2loopback (every
+  flavor)**: Out-of-tree NVIDIA and v4l2loopback kernel modules compiled
+  against the base or OGC kernel run under kernel lockdown when Secure Boot is
+  active. Unsigned modules fail to load; signing modules with an enrolled MOK
+  key (e.g. via the kernel's `sign-file` utility) is planned for future release
+  pipelines, but currently module signing is not implemented in-tree and Secure
+  Boot must remain disabled.
 
 `iso/live/src/install-flatpaks.sh` pins the bootc-installer Flatpak bundle to
 a specific `tuna-os/bootc-installer` release rather than resolving
@@ -226,7 +227,8 @@ The script (`iso/scripts/build-iso-tacklebox.sh`) resolves flavored image
 names through `scripts/flavors.py image` -- no literals, enforced by
 `just check` -- requires root (loop devices, mkfs), and writes
 `output/utah-<flavor>-tacklebox.iso`. Tacklebox itself comes from
-`ghcr.io/tuna-os/tacklebox:latest` unless `TACKLEBOX_FROM_SOURCE=1`; a host
+a digest-pinned `ghcr.io/tuna-os/tacklebox` image (see `TACKLEBOX_IMAGE` in
+the script) unless `TACKLEBOX_FROM_SOURCE=1`; a host
 binary wins when present (`TACKLEBOX_BIN`, or `tacklebox` on `PATH`), which
 matters on hosts where nested podman breaks container DNS (observed: the
 customize container's resolver unreachable from inside the tacklebox

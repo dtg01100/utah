@@ -3,7 +3,7 @@
 <!-- BEGIN E2E VERIFICATION -->
 [![Verified ISO desktop](docs/verification/screenshots/installed-fastfetch.png)](docs/verification/README.md)
 
-*LUKS ISO test passed for commit `d985064d3257`. [CI run](https://github.com/projectbluefin/utah/actions/runs/36143930533); [screenshots and provenance](docs/verification/README.md).*
+*LUKS ISO test passed for commit `815ea44d229e`. [CI run](https://github.com/projectbluefin/utah/actions/runs/36515045194); [screenshots and provenance](docs/verification/README.md).*
 <!-- END E2E VERIFICATION -->
 
 †Utahraptor ostrommaysi
@@ -67,7 +67,7 @@ than being noticed later.
 | | count |
 | --- | --- |
 | Bluefin contract installed | **57** |
-| Utah additions (GNOME 51, base-image parity, device firmware, desktop services) | 83 |
+| Utah additions (GNOME 51, base-image parity, device firmware, desktop services) | 85 |
 | Genuinely unavailable | **10** |
 
 The install writes its resolved list to `/usr/share/utah/contract.txt` and the
@@ -96,8 +96,9 @@ This is the honest list, and it is why the label above says pre-alpha.
   installed target systems boot Enforcing normally. Because the live environment
   currently uses `systemd-boot-unsigned`, Secure Boot must be disabled in firmware
   to boot the live media until signed shim integration is complete. Custom OGC
-  kernels and NVIDIA modules similarly require MOK enrollment or Secure Boot
-  disabled.
+  kernels, NVIDIA modules and the v4l2loopback virtual-camera module are all
+  built from source during the image build and unsigned; module signing is not
+  implemented yet, so Secure Boot must be disabled for them to load.
 - **Cross-vendor switch and update timers (`bootc-fetch-apply-updates`).**
   Switching to Utah from Bluefin or other bootc images carries Bluefin's
   `/etc/systemd/system/timers.target.wants/bootc-fetch-apply-updates.timer`

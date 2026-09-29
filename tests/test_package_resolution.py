@@ -55,7 +55,8 @@ class PackageResolutionTests(unittest.TestCase):
 
     def test_containerfile_installs_scripts_into_absent_destination(self):
         text = (ROOT / "Containerfile").read_text()
-        loop = re.search(r"RUN (for pair in .*?\bdone) &&", text, re.S).group(1)
+        loop = re.search(r"^RUN (?:--mount=\S+ \\\n\s+)?(for pair in .*?\bdone) &&",
+                         text, re.S | re.M).group(1)
         pairs = re.findall(r"([\w.-]+):(utah-[\w.-]+)", loop)
         self.assertTrue(pairs)
         with tempfile.TemporaryDirectory() as tmp:
@@ -204,7 +205,7 @@ class ParityContractTests(unittest.TestCase):
         self.assertEqual(sorted(set(parity) & others), [])
         self.assertEqual(sorted(set(parity) & set(installer.section(self.OVERLAY, "build"))), ["unzip"])
         removal = [line for line in (ROOT / "scripts/configure-services.sh").read_text().splitlines()
-                   if "remove --no-autoremove" in line]
+                   if "-y remove" in line]
         self.assertEqual(len(removal), 1)
         self.assertNotIn("unzip", removal[0])
 
