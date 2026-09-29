@@ -65,14 +65,28 @@ The TOML's sections are the contract's table of contents:
   symlinks that bypass uupd staging or undo manual rollbacks. Switchers can
   also manually verify or mask them if a local `/etc` symlink was preserved.
 
-  Unit files tolerate an expected non-zero exit per command with the `ExecStart=-`
-  prefix instead of `SuccessExitStatus=`. `SuccessExitStatus=1` is unit-wide, so
-  it also masks a genuine failure from a later command in the same unit — for
-  example the `touch` in `flatpak-nuke-fedora.service` that stamps
-  `/var/lib/flatpak/.fedora-initialized`. A unit that must ignore a remote or a
-  file possibly being absent takes `ExecStart=-` on that command only, and
-  creates its parent directory in an `ExecStartPre=` (`/var/lib/flatpak` is
-  absent on a freshly installed image, so the stamp would otherwise fail).
+## Tolerating a non-zero exit in a unit file
+
+Tolerate an expected non-zero exit per command with the `ExecStart=-` prefix
+rather than with `SuccessExitStatus=`. `SuccessExitStatus=1` is unit-wide, so
+it also masks a genuine exit 1 from a *later* command in the same unit — for
+example the `touch` in `flatpak-nuke-fedora.service` that stamps
+`/var/lib/flatpak/.fedora-initialized`, whose real failure would be reported as
+success.
+
+Two rules follow:
+
+- A unit that must ignore something possibly being absent (a remote, a file)
+  takes `ExecStart=-` on that one command. Nothing else in the unit is affected.
+- Create the parent directory in an `ExecStartPre=` when the stamp target's
+  directory is absent on a freshly installed image — `/var/lib/flatpak` is, so
+  `flatpak-nuke-fedora.service` runs `mkdir -p` before `touch`.
+
+Do not reach for `flatpak remote-delete --force` to make a re-run succeed: it
+only changes the "remote has installed refs" guard, so on a non-interactive
+rebase it deletes the `fedora` remote *along with* the apps installed from it,
+leaving those refs with no origin to update from. The `-` prefix alone already
+covers the missing-remote case.
 
 ## GNOME extensions are pinned submodules
 
