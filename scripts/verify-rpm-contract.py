@@ -319,8 +319,11 @@ def repo_pin_errors(
     Three ways to be unpinned are failures rather than passes:
       - no baseurl at all, so the repository resolves from wherever the consumer
         decides, or from a metalink/mirrorlist that can move between requests;
-      - a metalink/mirrorlist instead of a baseurl, which is the same hole with
-        an extra indirection;
+      - a metalink/mirrorlist, which is the same hole with an extra indirection.
+        DNF and librepo merge metalink/mirrorlist mirrors with any baseurl the
+        section also declares rather than letting the baseurl override them, so
+        a section that carries both still fetches from an unpinned origin; the
+        indirection is rejected whether or not the pinned baseurl is present;
       - a baseurl the manifest does not name for that id.
     An allowlisted id with no entry in the map is also a failure: it is the case
     where the pin was never written, and failing closed is what stops the
@@ -337,20 +340,28 @@ def repo_pin_errors(
         return errors
 
     baseurl = parser.get(section_name, "baseurl", fallback="").strip()
-    if not baseurl:
-        indirection = next(
-            (
-                key
-                for key in ("metalink", "mirrorlist")
-                if parser.get(section_name, key, fallback="").strip()
-            ),
-            "",
-        )
-        detail = f"resolves via {indirection}" if indirection else "declares no baseurl"
+    indirection = next(
+        (
+            key
+            for key in ("metalink", "mirrorlist")
+            if parser.get(section_name, key, fallback="").strip()
+        ),
+        "",
+    )
+    if indirection:
         errors.append(
             f"Allowlisted repository '{section_name}' is enabled in {source} and "
-            f"{detail}; only a pinned baseurl is approved (expected one of: "
-            f"{', '.join(sorted(declared))})"
+            f"resolves via {indirection}; DNF merges those mirrors with any "
+            "baseurl the section declares, so only a pinned baseurl is approved "
+            f"(expected one of: {', '.join(sorted(declared))})"
+        )
+        return errors
+
+    if not baseurl:
+        errors.append(
+            f"Allowlisted repository '{section_name}' is enabled in {source} and "
+            "declares no baseurl; only a pinned baseurl is approved (expected one "
+            f"of: {', '.join(sorted(declared))})"
         )
         return errors
 
@@ -701,16 +712,35 @@ def main() -> int:
     # pinned origins below, [utah-packages] could serve anything and the policy
     # would still pass. Every allowlisted id must therefore name its origin.
     try:
-        repo_baseurls = {
-            repo_id: tuple(urls)
-            for repo_id, urls in overlay_data["repositories"]["baseurls"].items()
-        }
+        declared_baseurls = overlay_data["repositories"]["baseurls"]
     except (KeyError, AttributeError):
         print(
             f"ERROR: Overlay manifest '{overlay}' is missing [repositories.baseurls] section",
             file=sys.stderr,
         )
         return 1
+
+    # A pin is a list of origins. A bare string would iterate per character and
+    # pin the id to "h", "t", "t", "p"... -- every comparison would then fail on
+    # an error message listing single letters, so the manifest mistake is named
+    # here instead of being reported as a baseurl mismatch.
+    mistyped = sorted(
+        repo_id
+        for repo_id, urls in declared_baseurls.items()
+        if not isinstance(urls, list)
+        or not all(isinstance(url, str) for url in urls)
+    )
+    if mistyped:
+        print(
+            f"ERROR: Overlay manifest '{overlay}' has [repositories.baseurls] entries "
+            f"that are not a list of URL strings: {', '.join(mistyped)}",
+            file=sys.stderr,
+        )
+        return 1
+
+    repo_baseurls = {
+        repo_id: tuple(urls) for repo_id, urls in declared_baseurls.items()
+    }
 
     unpinned = sorted(allowed_repos - repo_baseurls.keys())
     if unpinned:

@@ -122,9 +122,11 @@ the `baseurl` — so an id-only allowlist would certify a name, not a source, an
 `[utah-packages]` section pointing elsewhere would read as approved. Each allowed
 id therefore also has an entry in `[repositories.baseurls]` in
 `packages/utah.toml`, and the verifier requires the enabled section's `baseurl`
-to match it. A repository that declares no `baseurl`, or resolves through a
-`metalink` or `mirrorlist`, is a failure rather than a pass, and so is an
-allowlisted id with no pin at all: manifest silence is not approval. Comparison
+to match it. A repository that declares no `baseurl` is a failure rather than a
+pass, and so is one that declares a `metalink` or `mirrorlist` — even alongside
+the pinned `baseurl`, because DNF merges those mirrors with the `baseurl`
+instead of preferring it — and so is an allowlisted id with no pin at all:
+manifest silence is not approval. Comparison
 ignores a trailing slash and the case of the scheme and host, because those are
 not a different origin. Changing a repository's URL means changing the pin in
 the same commit — a unit test asserts the two agree.

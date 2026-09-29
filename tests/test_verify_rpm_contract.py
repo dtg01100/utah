@@ -621,6 +621,23 @@ class RepositoryPinManifestTests(unittest.TestCase):
         self.assertIn("[repositories.baseurls]", result.stderr)
         self.assertIn("nvidia-container-toolkit", result.stderr)
 
+    def test_a_pin_that_is_not_a_list_fails_the_check(self) -> None:
+        """A scalar pin would iterate per character and pin the id to letters."""
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            manifest = write_manifest(directory, ["bash"])
+            overlay = write_overlay(directory)
+            overlay.write_text(
+                overlay.read_text().replace(
+                    '"utah-packages" = ["file:///etc/utah-packages"]',
+                    '"utah-packages" = "file:///etc/utah-packages"',
+                )
+            )
+            result = self.run_check(manifest, overlay)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("not a list of URL strings", result.stderr)
+        self.assertIn("utah-packages", result.stderr)
+
     def test_a_missing_baseurls_section_fails_the_check(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)

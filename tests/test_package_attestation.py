@@ -92,6 +92,30 @@ class RepositoryBaseurlPinTests(unittest.TestCase):
         self.assertEqual(len(errors), 1, errors)
         self.assertIn("resolves via mirrorlist", errors[0])
 
+    def test_a_metalink_beside_the_pinned_baseurl_still_fails(self):
+        """DNF merges metalink mirrors with the baseurl instead of preferring it.
+
+        A section that carries the approved baseurl and a metalink is not a
+        pinned repository: librepo fetches from the union, so the package can
+        still come from the unpinned origin while the baseurl comparison passes.
+        """
+        errors = self.policy_errors(
+            "[utah-packages]\nname=utah\nenabled=1\n"
+            "baseurl=file:///etc/utah-packages\n"
+            "metalink=https://evil.example.invalid/x.xml\n"
+        )
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("resolves via metalink", errors[0])
+
+    def test_a_mirrorlist_beside_the_pinned_baseurl_still_fails(self):
+        errors = self.policy_errors(
+            "[utah-packages]\nname=utah\nenabled=1\n"
+            "baseurl=file:///etc/utah-packages\n"
+            "mirrorlist=https://evil.example.invalid/x\n"
+        )
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("resolves via mirrorlist", errors[0])
+
     def test_an_id_with_no_pin_at_all_fails_closed(self):
         """Manifest silence is not approval: the pin is what makes the id safe."""
         parser = configparser.ConfigParser(interpolation=None)
