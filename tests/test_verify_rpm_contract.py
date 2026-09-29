@@ -638,6 +638,49 @@ class RepositoryPinManifestTests(unittest.TestCase):
         self.assertIn("not a list of URL strings", result.stderr)
         self.assertIn("utah-packages", result.stderr)
 
+    def test_a_caller_that_omits_the_pin_map_is_refused(self) -> None:
+        """None is the opt-in to the id-only policy; silence is not.
+
+        Every production caller passes the manifest's [repositories.baseurls], so
+        a caller that forgets it is a bug, and a silent None would downgrade the
+        check this policy exists to make to a name check with no error.
+        """
+        verifier = load_module()
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.read_string(
+            "[utah-packages]\nname=utah\nenabled=1\n"
+            "baseurl=https://evil.example.invalid/x\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            repos_dir = Path(tmp)
+            (repos_dir / "utah-packages.repo").write_text(
+                "[utah-packages]\nname=utah\nenabled=1\n"
+                "baseurl=https://evil.example.invalid/x\n"
+            )
+            for call in (
+                lambda: verifier.check_repo_sections(
+                    parser, "utah-packages.repo", {"utah-packages"}
+                ),
+                lambda: verifier.verify_repository_policy(
+                    repos_dir, {"utah-packages"}
+                ),
+                lambda: verifier.verify_runtime_repository_policy({"utah-packages"}),
+            ):
+                with self.subTest(call=call):
+                    with self.assertRaises(TypeError) as caught:
+                        call()
+                    self.assertIn("requires expected_baseurls", str(caught.exception))
+
+            # ...while the deliberate id-only request still works, silently
+            # accepting the unpinned URL it was told to ignore.
+            self.assertEqual(
+                verifier.check_repo_sections(
+                    parser, "utah-packages.repo", {"utah-packages"},
+                    expected_baseurls=None,
+                ),
+                [],
+            )
+
     def test_a_missing_baseurls_section_fails_the_check(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)

@@ -583,14 +583,14 @@ class PackageAttestationTests(unittest.TestCase):
             (repos_dir / "utah-packages.repo").write_text(
                 "[utah-packages]\nname=utah\nenabled=True\n"
             )
-            errors = verifier.verify_repository_policy(repos_dir, allowed)
+            errors = verifier.verify_repository_policy(repos_dir, allowed, expected_baseurls=None)
             self.assertEqual(errors, [])
 
             # Adding an unapproved repo with enabled=true/yes must fail
             (repos_dir / "custom.repo").write_text(
                 "[unapproved-repo]\nname=bad\nenabled=yes\nbaseurl=https://example.com/%20/repo\n"
             )
-            errors = verifier.verify_repository_policy(repos_dir, allowed)
+            errors = verifier.verify_repository_policy(repos_dir, allowed, expected_baseurls=None)
             self.assertEqual(len(errors), 1)
             self.assertIn("Unapproved repository 'unapproved-repo'", errors[0])
 
@@ -598,7 +598,7 @@ class PackageAttestationTests(unittest.TestCase):
             (repos_dir / "fedora.repo").write_text(
                 "[fedora]\nname=Fedora Linux\nbaseurl=https://dl.fedoraproject.org/pub/fedora\nenabled=1\n"
             )
-            errors = verifier.verify_repository_policy(repos_dir, allowed)
+            errors = verifier.verify_repository_policy(repos_dir, allowed, expected_baseurls=None)
             self.assertTrue(any("Fedora repository 'fedora' is enabled" in e for e in errors))
 
     def test_runtime_policy_covers_dnf_conf_sections(self):
@@ -614,14 +614,18 @@ class PackageAttestationTests(unittest.TestCase):
             (root / "etc/dnf/dnf.conf").write_text(
                 "[main]\ngpgcheck=1\n\n[sneaky]\nname=sneaky\nenabled=1\n"
             )
-            errors = verifier.verify_runtime_repository_policy(allowed, root=root)
+            errors = verifier.verify_runtime_repository_policy(
+                allowed, root=root, expected_baseurls=None
+            )
             self.assertEqual(len(errors), 1)
             self.assertIn("Unapproved repository 'sneaky'", errors[0])
             self.assertIn("dnf.conf", errors[0])
 
             # [main] is DNF's own configuration, never a repository
             (root / "etc/dnf/dnf.conf").write_text("[main]\ngpgcheck=1\n")
-            self.assertEqual(verifier.verify_runtime_repository_policy(allowed, root=root), [])
+            self.assertEqual(verifier.verify_runtime_repository_policy(
+                allowed, root=root, expected_baseurls=None
+            ), [])
 
     def test_runtime_policy_follows_reposdir(self):
         """An alternate reposdir must be scanned; /etc/yum.repos.d alone is not the system."""
@@ -637,7 +641,9 @@ class PackageAttestationTests(unittest.TestCase):
             (root / "etc/dnf/dnf.conf").write_text(
                 "[main]\nreposdir=/etc/yum.repos.d,/opt/repos\n"
             )
-            errors = verifier.verify_runtime_repository_policy(allowed, root=root)
+            errors = verifier.verify_runtime_repository_policy(
+                allowed, root=root, expected_baseurls=None
+            )
             self.assertEqual(len(errors), 1)
             self.assertIn("Unapproved repository 'unapproved-elsewhere'", errors[0])
 
@@ -649,7 +655,9 @@ class PackageAttestationTests(unittest.TestCase):
             (root / "etc/yum.repos.d/fedora.repo").write_text(
                 "[fedora]\nname=Fedora\nenabled=1\n"
             )
-            errors = verifier.verify_runtime_repository_policy(allowed, root=root)
+            errors = verifier.verify_runtime_repository_policy(
+                allowed, root=root, expected_baseurls=None
+            )
             self.assertTrue(any("Fedora repository 'fedora' is enabled" in e for e in errors))
 
     def test_enabled_spelling_cannot_bypass_the_allowlist(self):
@@ -661,7 +669,7 @@ class PackageAttestationTests(unittest.TestCase):
                 (repos_dir / "custom.repo").write_text(
                     f"[unapproved-repo]\nname=bad\nenabled={spelling}\n"
                 )
-                errors = verifier.verify_repository_policy(repos_dir, allowed)
+                errors = verifier.verify_repository_policy(repos_dir, allowed, expected_baseurls=None)
                 self.assertEqual(len(errors), 1, errors)
                 self.assertIn("Unapproved repository 'unapproved-repo'", errors[0])
 
@@ -673,7 +681,7 @@ class PackageAttestationTests(unittest.TestCase):
                 (repos_dir / "custom.repo").write_text(
                     f"[unapproved-repo]\nname=bad\nenabled={spelling}\n"
                 )
-                self.assertEqual(verifier.verify_repository_policy(repos_dir, allowed), [])
+                self.assertEqual(verifier.verify_repository_policy(repos_dir, allowed, expected_baseurls=None), [])
 
     def test_relative_reposdir_resolves_against_the_policy_root(self):
         """A relative reposdir= must scan the attested root, not the process CWD."""
@@ -686,7 +694,9 @@ class PackageAttestationTests(unittest.TestCase):
                 "[unapproved-elsewhere]\nname=bad\nenabled=1\n"
             )
             (root / "etc/dnf/dnf.conf").write_text("[main]\nreposdir=opt/repos\n")
-            errors = verifier.verify_runtime_repository_policy(allowed, root=root)
+            errors = verifier.verify_runtime_repository_policy(
+                allowed, root=root, expected_baseurls=None
+            )
             self.assertEqual(len(errors), 1, errors)
             self.assertIn("Unapproved repository 'unapproved-elsewhere'", errors[0])
 
@@ -712,7 +722,9 @@ class PackageAttestationTests(unittest.TestCase):
                 (root / directory / "sneaky.repo").write_text(
                     "[unapproved-elsewhere]\nname=bad\nenabled=1\n"
                 )
-                errors = verifier.verify_runtime_repository_policy(allowed, root=root)
+                errors = verifier.verify_runtime_repository_policy(
+                allowed, root=root, expected_baseurls=None
+            )
                 self.assertEqual(len(errors), 1, errors)
                 self.assertIn("Unapproved repository 'unapproved-elsewhere'", errors[0])
 
@@ -734,7 +746,9 @@ class PackageAttestationTests(unittest.TestCase):
             )
             (root / "etc/dnf/dnf.conf").write_text("[main]\nreposdir=/etc/yum.repos.d\n")
             self.assertEqual(
-                verifier.verify_runtime_repository_policy(allowed, root=root), []
+                verifier.verify_runtime_repository_policy(
+                allowed, root=root, expected_baseurls=None
+            ), []
             )
 
     def test_generate_provenance_report(self):

@@ -304,6 +304,35 @@ def normalize_baseurl(url: str) -> str:
     return f"{scheme.lower()}://{host.lower()}{slash}{path}"
 
 
+class _Unset:
+    """Marker for a baseurl-pin argument the caller did not pass at all.
+
+    Distinct from None, which is a deliberate request for the id-only policy.
+    """
+
+    def __repr__(self) -> str:
+        return "<unset>"
+
+
+_UNSET = _Unset()
+
+
+def _require_baseurl_pins(
+    expected_baseurls: dict[str, tuple[str, ...]] | None | _Unset,
+    caller: str,
+) -> dict[str, tuple[str, ...]] | None:
+    """Reject an omitted baseurl-pin map instead of downgrading to id-only."""
+    if isinstance(expected_baseurls, _Unset):
+        raise TypeError(
+            f"{caller}() requires expected_baseurls: pass the manifest's "
+            "[repositories.baseurls] mapping to enforce pinned origins, or None "
+            "to apply the id-level allowlist alone. Omitting it is not an option -- "
+            "the unpinned check is the point of the policy, and a silent default "
+            "would read as a passing origin check."
+        )
+    return expected_baseurls
+
+
 def split_baseurls(raw: str) -> list[str]:
     """Split a baseurl option into the origins DNF would fetch from.
 
@@ -402,15 +431,21 @@ def check_repo_sections(
     parser: configparser.ConfigParser,
     source: str,
     allowed_repos: set[str],
+    *,
     skip_sections: frozenset[str] = frozenset(),
-    expected_baseurls: dict[str, tuple[str, ...]] | None = None,
+    expected_baseurls: dict[str, tuple[str, ...]] | None | _Unset = _UNSET,
 ) -> list[str]:
     """Apply the allowlist to every repository section of an already-parsed config.
 
-    expected_baseurls maps an allowlisted id to the baseurls it may serve. It is
-    optional so a caller that only wants the id-level policy can ask for that;
-    the manifest path always passes it, because the pinned origin is the point.
+    expected_baseurls maps an allowlisted id to the baseurls it may serve. It has
+    no usable default on purpose: leaving it out would silently degrade this
+    check to the id-only policy that verifies a repository *name* rather than a
+    source, and a caller that never learns it asked for the weaker check is the
+    failure mode worth spending a TypeError on. Pass the manifest's
+    [repositories.baseurls] map to enforce pinned origins, or None to say
+    deliberately that only the id-level policy is wanted.
     """
+    expected_baseurls = _require_baseurl_pins(expected_baseurls, "check_repo_sections")
     errors: list[str] = []
     for section_name in parser.sections():
         if section_name in skip_sections:
@@ -447,9 +482,11 @@ def verify_repository_policy(
     repos_dir: Path,
     allowed_repos: set[str],
     check_mode: bool = False,
-    expected_baseurls: dict[str, tuple[str, ...]] | None = None,
+    *,
+    expected_baseurls: dict[str, tuple[str, ...]] | None | _Unset = _UNSET,
 ) -> list[str]:
     """Prove the system exposes only explicitly allowed runtime RPM repositories."""
+    expected_baseurls = _require_baseurl_pins(expected_baseurls, "verify_repository_policy")
     errors: list[str] = []
     if not repos_dir.is_dir():
         return errors
@@ -524,7 +561,8 @@ def resolve_reposdirs(
 def verify_runtime_repository_policy(
     allowed_repos: set[str],
     root: Path = Path("/"),
-    expected_baseurls: dict[str, tuple[str, ...]] | None = None,
+    *,
+    expected_baseurls: dict[str, tuple[str, ...]] | None | _Unset = _UNSET,
 ) -> list[str]:
     """Prove the whole runtime DNF configuration exposes only allowed repositories.
 
@@ -534,6 +572,9 @@ def verify_runtime_repository_policy(
     default reposdir is a list of directories rather than one. The attestation
     has to cover what DNF would actually read, not one directory.
     """
+    expected_baseurls = _require_baseurl_pins(
+        expected_baseurls, "verify_runtime_repository_policy"
+    )
     errors: list[str] = []
     conf_paths = [
         root / "etc/dnf/dnf.conf",
