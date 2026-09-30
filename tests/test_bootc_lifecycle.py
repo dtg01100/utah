@@ -721,14 +721,21 @@ class TestBootmgrValidation(unittest.TestCase):
         self.csum_base = "1.0" + "a" * 62
         self.csum_cand = "1.0" + "b" * 62
 
-    def _entry_content(self, ostree_csum, linux_path="/vmlinuz-utah", initrd_path="/initramfs-utah.img"):
+    def _entry_content(self, ostree_csum, linux_path="/vmlinuz-utah", initrd_path="/initramfs-utah.img", options_extra=""):
+        # ostree's BLS entries carry the deployment's commit checksum only
+        # inside the `options` line, as the `<bootcsum>` segment of an
+        # `ostree=/ostree/boot.N/<stateroot>/<bootcsum>/<serial>` path. The
+        # `version` field is the integer deployment index and the filename
+        # is `ostree-<index>-<stateroot>.conf`; neither carries the commit,
+        # which is why the fixture puts it under `options` and not under
+        # the other two.
         return (
             f"title Utah {ostree_csum[:8]}\n"
-            f"version {ostree_csum}\n"
+            "version 0\n"
             "machine-id 0123456789abcdef0123456789abcdef\n"
             f"linux {linux_path}\n"
             f"initrd {initrd_path}\n"
-            "options root=UUID=0000 ro\n"
+            f"options root=UUID=0000 ro ostree=/ostree/boot.0/utah/{ostree_csum}/0{options_extra}\n"
         )
 
     def _listing(self, entries):
@@ -775,7 +782,7 @@ class TestBootmgrValidation(unittest.TestCase):
         listing = self._listing([
             (
                 f"/boot/loader/entries/ostree-utah-{self.csum_base[:8]}.conf",
-                f"title Utah {self.csum_base[:8]}\nversion {self.csum_base}\n",
+                f"title Utah {self.csum_base[:8]}\nversion 0\noptions root=UUID=0000 ostree=/ostree/boot.0/utah/{self.csum_base}/0\n",
             ),
         ])
         ok, msg, diag = bootc_lifecycle.validate_bootmgr_entries(status, listing)
@@ -813,11 +820,13 @@ class TestBootmgrValidation(unittest.TestCase):
         )
         self.assertTrue(ok, msg)
 
-    def test_filename_short_match_is_accepted(self):
-        # ostree emits entries as ostree-<stateroot>-<8hex>.conf where
-        # <8hex> is the short commit. A status JSON missing the ostree
-        # block must not make every entry fall through to "no match" --
-        # the filename match is a deliberate fallback.
+    def test_options_ostree_path_is_the_match_key(self):
+        # ostree carries the deployment's commit checksum only inside the
+        # `options` line's `ostree=/ostree/boot.N/<stateroot>/<bootcsum>/<serial>`
+        # path. `version` is the integer deployment index and the filename
+        # is `ostree-<index>-<stateroot>.conf`; neither carries the commit.
+        # A status JSON without an ostree block cannot anchor the match
+        # because nothing else is deployment-specific in the entry.
         status = {
             "status": {
                 "booted": {
@@ -838,8 +847,9 @@ class TestBootmgrValidation(unittest.TestCase):
             status, listing, expected_slots=("booted",)
         )
         self.assertFalse(ok)  # No ostree data to match against
-        # But the filename heuristic must still produce a match when the
-        # status JSON does carry the ostree checksum.
+
+        # When the status JSON does carry the checksum, the entry's
+        # options line is the only place to find it back.
         full_status = _make_status_with_ostree({"booted": self.csum_base})
         ok, msg, _ = bootc_lifecycle.validate_bootmgr_entries(
             full_status, listing, expected_slots=("booted",)
@@ -884,7 +894,7 @@ class TestBootmgrCli(unittest.TestCase):
         status = json.dumps(_make_status_with_ostree({"booted": csum}))
         listing = (
             f"=== ENTRY /boot/loader/entries/ostree-utah-{csum[:8]}.conf ===\n"
-            f"title Utah\nversion {csum}\nlinux /vmlinuz\ninitrd /initrd.img\noptions ro\n"
+            f"title Utah\nversion 0\nlinux /vmlinuz\ninitrd /initrd.img\noptions ro ostree=/ostree/boot.0/utah/{csum}/0\n"
             f"=== END ===\n"
         )
         proc = self._run_with_files(
@@ -905,7 +915,7 @@ class TestBootmgrCli(unittest.TestCase):
         )
         listing = (
             f"=== ENTRY /boot/loader/entries/ostree-utah-{csum_base[:8]}.conf ===\n"
-            f"title Utah baseline\nversion {csum_base}\nlinux /vmlinuz\ninitrd /initrd.img\noptions ro\n"
+            f"title Utah baseline\nversion 0\nlinux /vmlinuz\ninitrd /initrd.img\noptions ro ostree=/ostree/boot.0/utah/{csum_base}/0\n"
             f"=== END ===\n"
         )
         proc = self._run_with_files(

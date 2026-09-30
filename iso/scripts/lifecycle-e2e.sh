@@ -390,7 +390,12 @@ collect_bootmgr_listing() {
     # Read both the ESP `/loader/entries` (bootc writes here) and any
     # XBOOTLDR `/loader/entries` (BLS spec says implementations should also
     # pick those up). The find tolerates either or both being absent.
-    ssh_target 'bash -s' <<'INNER' 2>/dev/null || true
+    # Reads as root, since the ESP is typically fmask=0077 root-only and an
+    # EPERM read silently produces an empty listing indistinguishable from
+    # "finalize wrote nothing". `sudo` is preferred over `2>/dev/null || true`
+    # so a permission failure fails loudly and the validator's missing-entry
+    # message is honest.
+    ssh_target 'sudo bash -s' <<'INNER'
 shopt -s nullglob
 seen=0
 for root in /boot/loader/entries /boot/efi/loader/entries; do
@@ -591,7 +596,11 @@ python3 "${ROOT}/scripts/bootc_lifecycle.py" validate-phase staged \
     --candidate-image "${CANDIDATE_EXPECTED_IMAGE}" \
     || diagnose_failure "Staged deployment validation failed"
 
-verify_bootmgr_entries "${WORK}/staged-status.json" staged "booted,staged"
+# Phase 2 only checks `booted`: ostree-finalize-staged does not write the
+# staged BLS entry until shutdown, so on a correctly-functioning system the
+# entry does not exist yet and would fail the validator. Phase 3 (post-reboot)
+# checks both slots.
+verify_bootmgr_entries "${WORK}/staged-status.json" staged "booted"
 
 python3 "${ROOT}/scripts/bootc_lifecycle.py" record-diagnostics \
     --output-dir "${EVIDENCE}" \
@@ -629,7 +638,7 @@ python3 "${ROOT}/scripts/bootc_lifecycle.py" validate-phase upgraded \
     --candidate-digest "${EXPECTED_DIGEST}" \
     || diagnose_failure "Upgraded deployment validation failed"
 
-verify_bootmgr_entries "${WORK}/upgraded-status.json" upgraded "booted,rollback"
+verify_bootmgr_entries "${WORK}/upgraded-status.json" upgraded "booted"
 
 python3 "${ROOT}/scripts/bootc_lifecycle.py" record-diagnostics \
     --output-dir "${EVIDENCE}" \

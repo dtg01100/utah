@@ -325,26 +325,29 @@ def parse_loader_listing(text: str) -> list[LoaderEntry]:
 def entry_matches_deployment(entry: LoaderEntry, dep: DeploymentInfo) -> bool:
     """Return True if the BLS entry corresponds to the deployment.
 
-    bootc's BLS entries carry the ostree commit checksum in their `version`
-    field, and the deployment object exposes the same checksum as
-    `ostree_checksum`. When both are present that is the only authoritative
-    match: tag and digest pinning live in the container image, not the
-    bootloader entry, so they cannot replace it.
+    ostree's BLS entries are deployment-specific in only one place -- the
+    `options` line carries an `ostree=/ostree/boot.N/<stateroot>/<bootcsum>/<serial>`
+    path whose `<bootcsum>` is the commit checksum the deployment object
+    exposes as `ostree_checksum`. The `version` field is the integer
+    deployment index (`g_strdup_printf("%d", n_deployments - index)` in
+    ostree-sysroot-deploy.c) and the filename is `ostree-<index>-<stateroot>.conf`
+    -- neither carries the commit, so a match on either is fiction.
 
-    As a fallback (e.g. ostree data missing from the status JSON) the
-    entry's filename can carry the short commit -- ostree emits entries as
-    `ostree-<stateroot>-<8hex>.conf` -- and the function accepts that too,
-    so a missing field does not silently demote an entry to "no match".
+    The match therefore anchors on the `options` line: when the deployment
+    carries an ostree checksum, the entry matches iff that checksum
+    appears as a complete segment of the `ostree=` path. A non-empty
+    `options` without the right `ostree=` segment does not match, and a
+    deployment without an ostree checksum does not match anything (the
+    filename fallback was removed: ostree filenames carry no commit data,
+    so it could not have anchored on the right thing anyway).
     """
-    if dep.ostree_checksum:
-        version = entry.fields.get("version", "")
-        if version and version == dep.ostree_checksum:
-            return True
-    if dep.ostree_checksum:
-        short = dep.ostree_checksum[:8]
-        if short and short in entry.filename:
-            return True
-    return False
+    if not dep.ostree_checksum:
+        return False
+    options = entry.fields.get("options", "")
+    if not options:
+        return False
+    needle = f"/{dep.ostree_checksum}/"
+    return needle in options
 
 
 def validate_bootmgr_entries(

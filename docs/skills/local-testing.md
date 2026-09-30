@@ -191,8 +191,12 @@ silently leave behind: `bootc status` would still report the new
 deployment as queued, but the boot manager would have no entry to chain
 to it and the next reboot would boot the old kernel set. The validator
 matches each deployment's ostree commit checksum against the BLS entry's
-`version` field and confirms the entry carries a `linux` line and at
-least one of `initrd` or `options`. Evidence is written to
+`options` line (the `<bootcsum>` segment of an
+`ostree=/ostree/boot.N/<stateroot>/<bootcsum>/<serial>` path -- `version`
+is the integer deployment index and the filename is
+`ostree-<index>-<stateroot>.conf`, neither of which carries the commit)
+and confirms the entry carries a `linux` line and at least one of
+`initrd` or `options`. Evidence is written to
 `evidence/loader-entries-<phase>.txt` (the raw BLS listing) and
 `evidence/bootmgr-<phase>.json` (which slot matched which entry, and
 which slots had no entry).
