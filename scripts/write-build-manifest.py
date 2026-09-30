@@ -20,10 +20,12 @@ What it records:
 - `version`: the value baked into `org.opencontainers.image.version`, so the
   manifest and the label can be diff'd in one place.
 
-All four values are also LABELs, so a sanity check on the JSON is just a
-compare to the labels. The values come from environment variables set by
-build-ghcr in the Justfile; fallbacks keep the script invokable from a
-local build for parity testing without breaking the contract.
+Three of the four values (`commit`, `package_image_sha`, `version`) are
+also OCI LABELs, so a sanity check on the JSON is just a compare to those
+labels. `package_image` has no LABEL counterpart. The values come from
+environment variables set by build-ghcr in the Justfile; fallbacks keep
+the script invokable from a local build for parity testing without
+breaking the contract.
 """
 
 from __future__ import annotations
