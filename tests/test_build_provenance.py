@@ -1,0 +1,77 @@
+"""Containerfile pins the provenance labels and ARGs #371 depends on.
+
+The Containerfile must declare the build args, write them as LABELs, and
+invoke utah-write-build-manifest at the right RUN step. Each of these
+is enforced by a literal-string scan: if any one is missing, the
+in-image manifest and the OCI labels drift from the inputs the build
+recorded, and the very mismatch the labels are meant to surface comes
+back through the back door.
+"""
+
+from __future__ import annotations
+
+import re
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+CONTAINERFILE = ROOT / "Containerfile"
+
+
+class BuildProvenanceContainerfileTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.text = CONTAINERFILE.read_text()
+
+    def test_contains_build_commit_arg(self):
+        # The full Utah commit SHA arrives via this ARG. Falling back to
+        # `unknown` keeps a hand-run `podman build` from breaking, but
+        # nothing about the field is optional.
+        self.assertIsNotNone(
+            re.search(r"^ARG BUILD_COMMIT=unknown\s*$", self.text, re.MULTILINE),
+            "Containerfile is missing ARG BUILD_COMMIT=unknown",
+        )
+
+    def test_contains_package_image_sha_full_arg(self):
+        # Same logic as BUILD_COMMIT: required ARG, default of `unknown`
+        # so a missed build-arg is loud, not silent.
+        self.assertIsNotNone(
+            re.search(
+                r"^ARG PACKAGE_IMAGE_SHA_FULL=unknown\s*$",
+                self.text,
+                re.MULTILINE,
+            ),
+            "Containerfile is missing ARG PACKAGE_IMAGE_SHA_FULL=unknown",
+        )
+
+    def test_revision_label_uses_build_commit(self):
+        # org.opencontainers.image.revision is the label post-mortems read
+        # first. Pinning it to BUILD_COMMIT (not SHA_HEAD_SHORT) gives the
+        # full SHA, which is what the sync workflow passes.
+        self.assertIn(
+            'LABEL org.opencontainers.image.revision="${BUILD_COMMIT}"',
+            self.text,
+        )
+
+    def test_package_image_sha_label(self):
+        # The package image digest label is the entire point of #371 -- a
+        # build that resolves the wrong PACKAGE_IMAGE_SHA must show up in
+        # `podman inspect` without having to diff installed RPM versions.
+        self.assertIn(
+            'LABEL io.projectbluefin.utah.package_image_sha="'
+            '${PACKAGE_IMAGE_SHA_FULL}"',
+            self.text,
+        )
+
+    def test_invokes_write_build_manifest(self):
+        # The sidecar JSON is what the running image ships; the LABEL is
+        # what the OCI manifest ships. Both come from the same env vars,
+        # so a single RUN that invokes utah-write-build-manifest with them
+        # is enough to keep them in lockstep.
+        self.assertIn("/usr/local/libexec/utah-write-build-manifest", self.text)
+        self.assertIn('BUILD_COMMIT="${BUILD_COMMIT}"', self.text)
+        self.assertIn('PACKAGE_IMAGE_SHA="${PACKAGE_IMAGE_SHA}"', self.text)
+
+
+if __name__ == "__main__":
+    unittest.main()

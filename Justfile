@@ -317,6 +317,20 @@ build-ghcr base_name stream flavor kernel_pin="":
       --build-arg IMAGE_VENDOR={{ repo_organization }} \
       --build-arg VERSION="$version" \
       --build-arg SHA_HEAD_SHORT="$(git rev-parse --short HEAD)" \
+      # Full Utah commit SHA this build was invoked from. `GITHUB_SHA` is
+      # the captured SHA on a GitHub Actions runner (push, PR, dispatch);
+      # falling back to `git rev-parse HEAD` covers the local-only path
+      # and any future change to the runner env contract. The value lands
+      # in the org.opencontainers.image.revision label and the
+      # build-manifest sidecar so a stale-ref build is loud (#371).
+      --build-arg BUILD_COMMIT="${GITHUB_SHA:-$(git rev-parse HEAD)}" \
+      # The package repository digest the Containerfile pins is read back
+      # here so it lands in both the io.projectbluefin.utah.package_image_sha
+      # label and /usr/share/utah/build-manifest.json. Source of truth is
+      # the ARG at the top of the Containerfile; reading it out keeps the
+      # runner from trusting a build-arg it might have been tricked into
+      # setting to something else.
+      --build-arg PACKAGE_IMAGE_SHA_FULL="$(grep -E '^ARG PACKAGE_IMAGE_SHA=' Containerfile | head -n1 | cut -d= -f2-)" \
       --build-arg ENABLE_SSHD="${ENABLE_SSHD:-0}" \
       --tag "localhost/$image_name:{{ stream }}" \
       --file Containerfile .
@@ -340,6 +354,11 @@ build-local stream="testing" package_image="localhost/utah-packages:local-merged
       --build-arg IMAGE_VENDOR="{{ repo_organization }}" \
       --build-arg VERSION="$version" \
       --build-arg SHA_HEAD_SHORT="$(git rev-parse --short HEAD)" \
+      # Mirror the new provenance build-args from build-ghcr so a local
+      # `just build-local` image carries the same labels and the same
+      # /usr/share/utah/build-manifest.json as the CI artifact (#371).
+      --build-arg BUILD_COMMIT="$(git rev-parse HEAD)" \
+      --build-arg PACKAGE_IMAGE_SHA_FULL="${PACKAGE_IMAGE_SHA:-sha256:0000000000000000000000000000000000000000000000000000000000000000}" \
       --build-arg ENABLE_SSHD="${ENABLE_SSHD:-1}" \
       --tag "localhost/{{ image }}:{{ stream }}" \
       --file Containerfile .

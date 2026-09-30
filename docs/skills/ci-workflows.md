@@ -1,7 +1,7 @@
 ---
 name: ci-workflows
-version: "1.0"
-last_updated: "2026-09-19"
+version: "1.1"
+last_updated: "2026-09-30"
 id: ci-workflows
 one_line_purpose: Navigate Utah's build, promote, and sync workflow topology.
 entry_point: docs/skills/ci-workflows.md
@@ -168,6 +168,15 @@ Source pushes to `main` and the nightly schedule call
 `reusable-sync-branches.yml@v1`, then explicitly dispatch `build.yml` on
 `testing` with `actions: write`. README/verification-only pushes are excluded
 to avoid evidence-update build loops. Nightly runs still sync those changes.
+
+The dispatched build that consumed a stale `PACKAGE_IMAGE_SHA` under a
+post-bump `BUILD_ID` (#371) is the failure mode every shipped image carries
+the provenance to catch: `org.opencontainers.image.revision` and
+`io.projectbluefin.utah.package_image_sha` on the OCI manifest, and the
+same four fields plus `package_image` and `version` in
+`/usr/share/utah/build-manifest.json`. A future sync workflow that pins
+its dispatched build to the SHA it just pushed will not eliminate the
+race entirely; the labels are what makes the surviving drift loud.
 
 ## ISO LUKS gate and screenshots
 
