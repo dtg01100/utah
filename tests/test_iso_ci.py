@@ -434,6 +434,13 @@ ao Oo
     def test_rejects_fastfetch_body_without_the_sentinel(self):
         self.assertFalse(self.matches("Kernel: 7.1.8-100.fc43.x86_64\nGNOME 51.beta\n"))
 
+    def test_rejects_lowercase_fastfetch_that_only_matches_a_command_not_found(self):
+        # A bare `fastfetch: command not found` line, paired with a kernel line,
+        # must not pass the gate. The sentinel anchor is upper-case FASTFETCH
+        # specifically because bash's own "command not found" message is the
+        # only lower-case "fastfetch" tesseract has ever produced in the wild.
+        self.assertFalse(self.matches("bash: fastfetch: command not found\nLinux 7.2.7-200\n"))
+
     def test_rejects_an_empty_or_missing_transcript(self):
         self.assertFalse(self.matches(""))
         self.assertFalse(

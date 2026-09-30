@@ -26,5 +26,5 @@ OCR_TEXT="${1:?path to the tesseract transcript is required}"
 
 [[ -s "${OCR_TEXT}" ]] || exit 1
 
-grep -qi 'FASTFETCH' "${OCR_TEXT}" || exit 1
+grep -qF 'FASTFETCH' "${OCR_TEXT}" || exit 1
 grep -qiE 'kernel|Linux[[:space:]]+[0-9]+\.[0-9]+' "${OCR_TEXT}" || exit 1
