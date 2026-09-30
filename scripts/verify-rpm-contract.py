@@ -38,6 +38,16 @@ from typing import Any
 # was one source, not the only one.
 NVIDIA_PACKAGES: tuple[str, ...] = ("nvidia-container-toolkit",)
 
+# The report's build stamp comes from SOURCE_DATE_EPOCH, the reproducible-builds
+# convention the build sets from the source commit date. With no stamp to read,
+# the report falls back to this fixed sentinel rather than the wall clock: the
+# report is retained in the image, so a wall-clock stamp would make
+# /usr/share/utah/package-origins.{json,txt} -- and the layer carrying it --
+# differ on every rebuild of byte-identical inputs. 1980-01-01 is the same
+# "no meaningful timestamp" sentinel zip and reproducible-build tooling use, and
+# a report built without a stamp says so through build_provenance.timestamp_source.
+DEFAULT_BUILD_EPOCH = 315532800
+
 # Where the retained package-origin/NEVRA report lands in a built image.
 # UTAH_REPORT_DIR redirects it, which is how the tests exercise the real writer
 # without touching the host's /usr/share/utah.
@@ -578,6 +588,53 @@ def verify_runtime_repository_policy(
     return errors
 
 
+def resolve_build_timestamp(environ: dict[str, str] | None = None) -> tuple[str, str]:
+    """Return the report's build stamp and where it was read from.
+
+    SOURCE_DATE_EPOCH wins; an absent, empty, zero, negative, unparseable or
+    out-of-range value falls back to the fixed sentinel so the retained report is
+    byte-identical across rebuilds either way. Falling back to the wall clock --
+    which is what this did before -- put a different timestamp in the image on
+    every build of the same inputs, so the fallback is deterministic rather than
+    merely non-crashing. The fallback is announced on stderr, because a report
+    whose stamp is the sentinel is a report built without a stamp.
+
+    Zero and negative values are "no stamp", not a stamp of 1970 or earlier: the
+    Containerfile declares SOURCE_DATE_EPOCH=0 as its default, so a build that
+    passes no stamp would otherwise record 1970-01-01 with a
+    timestamp_source of "source-date-epoch" -- a stamp the build never had.
+    """
+    env = os.environ if environ is None else environ
+    raw = env.get("SOURCE_DATE_EPOCH", "").strip()
+    if raw:
+        try:
+            epoch = int(raw)
+        except ValueError:
+            reason = f"unusable SOURCE_DATE_EPOCH={raw!r}"
+        else:
+            if epoch > 0:
+                try:
+                    return (
+                        datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat(),
+                        "source-date-epoch",
+                    )
+                except (ValueError, OverflowError, OSError):
+                    reason = f"unusable SOURCE_DATE_EPOCH={raw!r}"
+            else:
+                reason = f"SOURCE_DATE_EPOCH={raw!r} is the no-stamp default"
+    else:
+        reason = "SOURCE_DATE_EPOCH is unset"
+    print(
+        f"WARNING: {reason}; stamping the package-origin report with the fixed "
+        f"epoch {DEFAULT_BUILD_EPOCH} instead of the wall clock",
+        file=sys.stderr,
+    )
+    return (
+        datetime.fromtimestamp(DEFAULT_BUILD_EPOCH, tz=timezone.utc).isoformat(),
+        "sentinel-epoch",
+    )
+
+
 def generate_provenance_report(
     installed: dict[str, dict[str, Any]],
     flavor: str,
@@ -619,15 +676,7 @@ def generate_provenance_report(
                 for c in copies
             ]
 
-    if "SOURCE_DATE_EPOCH" in os.environ:
-        try:
-            timestamp = datetime.fromtimestamp(
-                int(os.environ["SOURCE_DATE_EPOCH"]), tz=timezone.utc
-            ).isoformat()
-        except (ValueError, OverflowError):
-            timestamp = datetime.now(timezone.utc).isoformat()
-    else:
-        timestamp = datetime.now(timezone.utc).isoformat()
+    timestamp, timestamp_source = resolve_build_timestamp()
 
     report: dict[str, Any] = {
         "build_provenance": {
@@ -635,6 +684,7 @@ def generate_provenance_report(
             "image": os.environ.get("IMAGE_NAME", "utah"),
             "version": os.environ.get("VERSION", "testing"),
             "timestamp": timestamp,
+            "timestamp_source": timestamp_source,
             "contract_packages": len(installed),
             "factory_packages_count": factory_count,
             "hummingbird_packages_count": hummingbird_count,
@@ -678,6 +728,17 @@ def generate_provenance_report(
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", action="store_true")
+    parser.add_argument(
+        "--no-report",
+        action="store_true",
+        help=(
+            "verify only; do not resolve a build stamp or write the retained "
+            "provenance report. The Containerfile's early flavor-main pass runs "
+            "before SOURCE_DATE_EPOCH is declared, so its report would be a "
+            "sentinel one the report-writing pass overwrites anyway -- and its "
+            "stderr warning would claim a stamp was missing on every build."
+        ),
+    )
     parser.add_argument("manifest", type=Path)
     parser.add_argument("overlay", type=Path, nargs="?", default=None)
     args = parser.parse_args()
@@ -895,25 +956,30 @@ def main() -> int:
 
     # Retain package-origin/NEVRA report with build provenance
     report_dir = Path(os.environ.get("UTAH_REPORT_DIR", DEFAULT_REPORT_DIR))
-    try:
-        report = generate_provenance_report(
-            installed, flavor, allowed_repos, package_sections, report_dir
-        )
-    except OSError as err:
-        print(
-            f"ERROR: could not retain provenance report in {report_dir}: {err}",
-            file=sys.stderr,
-        )
-        return 1
+    report = None
+    if not args.no_report:
+        try:
+            report = generate_provenance_report(
+                installed, flavor, allowed_repos, package_sections, report_dir
+            )
+        except OSError as err:
+            print(
+                f"ERROR: could not retain provenance report in {report_dir}: {err}",
+                file=sys.stderr,
+            )
+            return 1
     print(
         f"All {len(expected)} contract packages verified (GNOME versions, factory rebuilds, repo policy)."
     )
-    print(
-        f"Retained provenance report for {len(installed)} packages "
-        f"({report['build_provenance']['factory_packages_count']} factory, "
-        f"{report['build_provenance']['hummingbird_packages_count']} hummingbird) "
-        f"in {report_dir / 'package-origins.json'}."
-    )
+    if report is None:
+        print("Skipped provenance report retention (--no-report).")
+    else:
+        print(
+            f"Retained provenance report for {len(installed)} packages "
+            f"({report['build_provenance']['factory_packages_count']} factory, "
+            f"{report['build_provenance']['hummingbird_packages_count']} hummingbird) "
+            f"in {report_dir / 'package-origins.json'}."
+        )
 
     if "nvidia" not in flavor:
         return 0

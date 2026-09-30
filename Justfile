@@ -283,6 +283,7 @@ build-ghcr base_name stream flavor kernel_pin="":
       --build-arg IMAGE_VENDOR={{ repo_organization }} \
       --build-arg VERSION="$version" \
       --build-arg SHA_HEAD_SHORT="$(git rev-parse --short HEAD)" \
+      --build-arg SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" \
       --build-arg ENABLE_SSHD="${ENABLE_SSHD:-0}" \
       --tag "localhost/$image_name:{{ stream }}" \
       --file Containerfile .
@@ -306,6 +307,7 @@ build-local stream="testing" package_image="localhost/utah-packages:local-merged
       --build-arg IMAGE_VENDOR="{{ repo_organization }}" \
       --build-arg VERSION="$version" \
       --build-arg SHA_HEAD_SHORT="$(git rev-parse --short HEAD)" \
+      --build-arg SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" \
       --build-arg ENABLE_SSHD="${ENABLE_SSHD:-1}" \
       --tag "localhost/{{ image }}:{{ stream }}" \
       --file Containerfile .
