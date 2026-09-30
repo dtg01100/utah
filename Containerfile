@@ -88,7 +88,12 @@ COPY scripts/install-packages.py \
 # Common publishes Bluefin artwork, desktop defaults, Brewfiles, and setup
 # hooks in a separate profile from its shared system files. Both are required:
 # copying only /system_files/shared leaves a functional GNOME desktop that is
-# still visibly Hummingbird and has no default Flatpak set.
+# still visibly Hummingbird and has no default Flatpak set. The brand
+# pixmaps and Plymouth themes in /system_files/bluefin conflict with what
+# `fedora-logos` from the package transaction installs, so the overlay for
+# those paths is reapplied after `utah-install-packages` (#398). Everything
+# else stays here so the package transaction sees the dconf keyfiles,
+# services, Brewfiles, and setup hooks it expects.
 COPY --from=common /system_files/shared /tmp/utah-common
 COPY --from=common /system_files/bluefin /tmp/utah-bluefin
 COPY --from=brew /system_files /tmp/utah-brew
@@ -195,7 +200,9 @@ ARG UUPD_TIMER_SHA256=bbb5f098ec33d047bdef571e0bc112364df157e0f92d73e0febab703c4
 # own and cost forty seconds to commit a few megabytes. It lives in
 # scripts/mirror-shim.sh rather than inline, because as a bare && chain a
 # failure printed nothing at all -- see the comment at the top of that script.
-RUN mkdir -p /tmp/uupd && \
+RUN --mount=type=bind,from=common,source=/system_files/bluefin/usr/share/pixmaps,target=/tmp/utah-bluefin-pixmaps,ro \
+    --mount=type=bind,from=common,source=/system_files/bluefin/usr/share/plymouth,target=/tmp/utah-bluefin-plymouth,ro \
+    mkdir -p /tmp/uupd && \
     curl -fsSL "https://github.com/ublue-os/uupd/releases/download/${UUPD_VERSION}/uupd_Linux_x86_64.tar.gz" \
       -o /tmp/uupd/uupd_Linux_x86_64.tar.gz && \
     echo "${UUPD_SHA256}  /tmp/uupd/uupd_Linux_x86_64.tar.gz" | sha256sum --check --strict && \
@@ -208,6 +215,18 @@ RUN mkdir -p /tmp/uupd && \
     echo "${UUPD_TIMER_SHA256}  /tmp/uupd/uupd.timer" | sha256sum --check --strict && \
     /usr/local/libexec/utah-build-gnome-extensions && \
     /usr/local/libexec/utah-verify-gnome-extensions && \
+    # Re-apply Common's brand assets on top of what the package transaction
+    # installed (#398). fedora-logos ships Fedora-marked replacements for the
+    # pixmaps and Plymouth themes the early overlay laid down; without this
+    # reapplied layer, GDM would still fall back to the schema default (a
+    # GDM dconf keyfile is also installed and asserted by #378), and other
+    # consumers -- the about dialog, Plymouth, system-info panels -- would
+    # keep showing the Fedora wordmark. Only the paths that conflict with
+    # packages are reapplied; dconf, services, and Brewfiles are unaffected
+    # by RPMs and stay where the first overlay put them.
+    cp -a /tmp/utah-bluefin-pixmaps/. /usr/share/pixmaps/ && \
+    cp -a /tmp/utah-bluefin-plymouth/. /usr/share/plymouth/ && \
+    rm -rf /tmp/utah-bluefin-pixmaps /tmp/utah-bluefin-plymouth && \
     glib-compile-schemas /usr/share/glib-2.0/schemas && \
     ENABLE_SSHD="${ENABLE_SSHD}" /usr/local/libexec/utah-configure-services && \
     /usr/local/libexec/utah-configure-branding && \

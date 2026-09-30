@@ -386,6 +386,100 @@ class ServiceMaskParityTests(unittest.TestCase):
             mock_run.assert_not_called()
 
 
+class BrandAssetOverlayOrderTests(unittest.TestCase):
+    """Issue #398: the brand-asset overlay must run AFTER the package transaction.
+
+    ``utah-install-packages`` installs ``fedora-logos``, which ships its own
+    Fedora-marked copies of every path in ``/usr/share/pixmaps/`` and the
+    Plymouth ``spinner`` theme. The Common overlay at the top of the
+    Containerfile lays Bluefin-marked versions on disk, but ``cp -a`` runs
+    before the package transaction -- so the RPM wins and every fedora-*.png,
+    ``system-logo-white.png``, and the spinner watermark revert to Fedora
+    branding. The GDM greeter is masked by a dconf keyfile (#378); the other
+    consumers (Plymouth, About dialog, system-info panels) are not, so they
+    would still show the Fedora wordmark without a reapplied overlay.
+
+    The fix is a second bind-mount of Common's brand assets into the RUN
+    block that runs after the package install, so the Bluefin-marked files
+    win on disk. These tests assert the Containerfile structure so a
+    reorder that re-introduces the regression fails locally before any
+    image is composed.
+    """
+
+    CONTAINERFILE = ROOT / "Containerfile"
+
+    def _containerfile(self) -> str:
+        return self.CONTAINERFILE.read_text()
+
+    def test_pixmap_overlay_is_reapplied_after_package_install(self):
+        """The bind-mount that copies Common's pixmaps must appear AFTER the
+        ``utah-install-packages`` RUN, not before it.
+        """
+        text = self._containerfile()
+        packages_index = text.find("utah-install-packages")
+        pixmap_mount_index = text.find(
+            "--mount=type=bind,from=common,source=/system_files/bluefin/usr/share/pixmaps"
+        )
+        # The pixmap re-overlay must appear in the file at all.
+        self.assertGreaterEqual(
+            pixmap_mount_index,
+            0,
+            "Containerfile is missing the post-install Common pixmap bind-mount (#398)",
+        )
+        # And it must come after the package install step.
+        self.assertGreater(
+            pixmap_mount_index,
+            packages_index,
+            "Common pixmap re-overlay must appear after utah-install-packages to win over "
+            "fedora-logos (#398)",
+        )
+
+    def test_plymouth_overlay_is_reapplied_after_package_install(self):
+        """Same constraint for the Plymouth ``spinner`` theme: fedora-logos
+        overwrites ``watermark.png`` and ``silverblue-watermark.png`` with
+        Fedora-marked copies, so the bind-mount must appear after the
+        package transaction.
+        """
+        text = self._containerfile()
+        packages_index = text.find("utah-install-packages")
+        plymouth_mount_index = text.find(
+            "--mount=type=bind,from=common,source=/system_files/bluefin/usr/share/plymouth"
+        )
+        self.assertGreaterEqual(
+            plymouth_mount_index,
+            0,
+            "Containerfile is missing the post-install Common Plymouth bind-mount (#398)",
+        )
+        self.assertGreater(
+            plymouth_mount_index,
+            packages_index,
+            "Common Plymouth re-overlay must appear after utah-install-packages to win over "
+            "fedora-logos (#398)",
+        )
+
+    def test_reapplied_overlay_copies_pixmaps_into_usr_share(self):
+        """The post-install RUN must actually copy the bind-mounted pixmaps
+        onto ``/usr/share/pixmaps/``, not just mount them. Mounting without
+        a copy step would leave the Fedora files in place.
+        """
+        text = self._containerfile()
+        # The mount target is /tmp/utah-bluefin-pixmaps; the copy must come
+        # from that staging path. Find every reference and verify the copy
+        # happens at least once.
+        self.assertIn("/tmp/utah-bluefin-pixmaps", text)
+        self.assertIn("/tmp/utah-bluefin-plymouth", text)
+        # Both staging paths must be copied into their final destinations.
+        self.assertRegex(
+            text,
+            r"cp -a /tmp/utah-bluefin-pixmaps/\.\s+/usr/share/pixmaps/",
+            "Re-overlay must cp Common's pixmaps into /usr/share/pixmaps/ (#398)",
+        )
+        self.assertRegex(
+            text,
+            r"cp -a /tmp/utah-bluefin-plymouth/\.\s+/usr/share/plymouth/",
+            "Re-overlay must cp Common's Plymouth theme into /usr/share/plymouth/ (#398)",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

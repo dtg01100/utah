@@ -142,6 +142,35 @@ gets its login. A mask is also the only lever that works here — the generator'
 `getty.target.wants` symlink is created in `/run` at boot, so it cannot be
 deleted at build time, and a preset entry alone would not stop it.
 
+## Brand assets are reapplied after the package transaction (#398)
+
+The early overlay (see the `cp -a /tmp/utah-bluefin/. /` step in the
+Containerfile) lays Common's Bluefin-marked copies of `/usr/share/pixmaps/`
+and `/usr/share/plymouth/themes/spinner/` on disk. The package transaction
+that installs `fedora-logos` then runs and overwrites those files with
+Fedora-marked copies. Every path in `/usr/share/pixmaps/` is at risk
+(`fedora-gdm-logo.png`, `fedora-logo.png`, `fedora-logo-icon.png`,
+`fedora-logo-small.png`, `fedora-logo-sprite.png`, `fedora_logo_med.png`,
+`fedora_whitelogo_med.png`, `system-logo-white.png`); Plymouth's spinner
+theme is at risk the same way (`watermark.png`, `silverblue-watermark.png`).
+
+The GDM greeter is masked by an `org.gnome.login-screen.logo` dconf
+keyfile under `/etc/dconf/db/gdm.d/01-bluefin-gdm-logo` (#378), so GDM no
+longer falls back to the schema default. The other consumers — Plymouth,
+the About dialog, system-info panels, the login session background on the
+gnome-shell that runs *after* GDM — would keep doing so without the second
+overlay.
+
+The fix binds Common's brand-asset trees into the post-package-install RUN
+step (`--mount=type=bind,from=common,...`) and `cp -a`s them onto the
+corresponding `/usr/share/...` paths. dconf keyfiles, systemd units,
+Brewfiles, and `/usr/share/ublue-os/` content are unaffected by RPMs and
+stay where the first overlay put them, so only the conflicting paths are
+reapplied. `tests/test_desktop_contract.py::BrandAssetOverlayOrderTests`
+asserts the bind-mount order against the file as written so a reorder
+that re-introduces the regression fails the unit suite before any image is
+composed.
+
 ## The verifiers run twice
 
 The same verifier runs in the Containerfile and on demand, so a local image
