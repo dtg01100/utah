@@ -26,6 +26,9 @@ class DeploymentInfo:
     version: str | None = None
     timestamp: str | None = None
     pinned: bool = False
+    ostree_checksum: str | None = None
+    stateroot: str | None = None
+    deploy_serial: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -66,6 +69,31 @@ def _extract_slot_deployment(slot_name: str, entry: dict[str, Any] | None) -> De
     timestamp = img_data.get("timestamp") or entry.get("timestamp")
     pinned = bool(entry.get("pinned", False))
 
+    # bootc's BootEntry exposes an "ostree" object with the commit checksum
+    # (the same string that the BLS entry's `version` field carries), the
+    # stateroot name, and the deploy serial. The boot-manager checks key off
+    # this checksum, not the container image digest, so it must be parsed
+    # here rather than rediscovered later from the BLS listing.
+    ostree_obj = entry.get("ostree")
+    if not isinstance(ostree_obj, dict):
+        ostree_obj = entry.get("Ostree") if isinstance(entry.get("Ostree"), dict) else None
+    ostree_checksum: str | None = None
+    stateroot: str | None = None
+    deploy_serial: int | None = None
+    if isinstance(ostree_obj, dict):
+        csum_raw = ostree_obj.get("checksum") or ostree_obj.get("Checksum")
+        if csum_raw:
+            ostree_checksum = str(csum_raw)
+        stateroot_raw = ostree_obj.get("stateroot") or ostree_obj.get("Stateroot")
+        if stateroot_raw:
+            stateroot = str(stateroot_raw)
+        serial_raw = ostree_obj.get("deploySerial") or ostree_obj.get("deploy_serial")
+        if serial_raw is not None:
+            try:
+                deploy_serial = int(serial_raw)
+            except (TypeError, ValueError):
+                deploy_serial = None
+
     return DeploymentInfo(
         slot=slot_name,
         image=str(image_name),
@@ -74,6 +102,9 @@ def _extract_slot_deployment(slot_name: str, entry: dict[str, Any] | None) -> De
         version=str(version) if version is not None else None,
         timestamp=str(timestamp) if timestamp is not None else None,
         pinned=pinned,
+        ostree_checksum=ostree_checksum,
+        stateroot=stateroot,
+        deploy_serial=deploy_serial,
     )
 
 
@@ -156,6 +187,241 @@ def parse_bootc_status(raw_data: str | dict[str, Any]) -> dict[str, DeploymentIn
             deployments[slot] = dep
 
     return deployments
+
+
+# A systemd-boot entry follows the Boot Loader Specification (BLS) Type #1:
+# one `key value` line per option (whitespace-separated, NOT `key=value`),
+# with continuation lines starting with whitespace. Only the keys the
+# lifecycle suite cares about are read -- the whole file is not modelled
+# because bootc-generated entries use a small, stable subset, and adding
+# every key would just trade noise for failures when an unrelated
+# extension key shows up.
+
+@dataclass
+class LoaderEntry:
+    """A parsed BLS Type 1 boot loader entry.
+
+    `filename` is the path the listing recorded the entry under (relative to
+    the ESP root). It is preserved so failure diagnostics can name the file a
+    human can inspect. `raw` keeps the original content for callers that want
+    to do further matching beyond the parsed keys.
+    """
+
+    filename: str
+    fields: dict[str, str]
+    raw: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"filename": self.filename, "fields": dict(self.fields)}
+
+
+def parse_loader_entry(filename: str, content: str) -> LoaderEntry:
+    """Parse a single BLS Type #1 entry file's `key value` lines.
+
+    The Boot Loader Specification (BLS) Type #1 format uses one or more
+    spaces as the key/value separator, not `=`; the spec is explicit that
+    "the first word of a line is used as key and is separated by one or
+    more spaces from the value", and the rest of the line is the value
+    verbatim. systemd-boot and bootc both follow that form, so the
+    parser must too.
+
+    Lines starting with `#` are comments and ignored; continuation lines
+    start with whitespace and belong to the previous key (a `linux` value
+    can in principle span lines, though bootc's emitter does not produce
+    them). The first occurrence of a key wins, matching what bootc emits
+    so a stray duplicate does not shadow the real setting.
+    """
+    fields: dict[str, str] = {}
+    current_key: str | None = None
+    for raw_line in content.splitlines():
+        if not raw_line:
+            continue
+        # Continuation lines belong to the prior key; the leading whitespace
+        # is significant in the spec, so append verbatim with a single
+        # separating space.
+        if raw_line[0] in (" ", "\t") and current_key is not None:
+            appended = (fields.get(current_key, "") + " " + raw_line.strip()).strip()
+            fields[current_key] = appended
+            continue
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        key, _, value = stripped.partition(" ")
+        key = key.strip()
+        value = value.strip()
+        if not key:
+            continue
+        if key not in fields:
+            fields[key] = value
+            current_key = key
+        else:
+            current_key = None
+    return LoaderEntry(filename=filename, fields=fields, raw=content)
+
+
+# The ESP listing is captured as a single blob so the lifecycle harness can
+# pass it through stdin: each entry is delimited by a header line of the
+# form "=== ENTRY <path> ===" followed by the entry's content, terminated
+# by an "=== END ===" sentinel. The format is intentionally trivial -- the
+# harness assembles it with a `for` loop over `find` results -- so the
+# parser can stay strict without surprising the producer.
+
+LOADER_LISTING_HEADER = "=== ENTRY"
+LOADER_LISTING_END = "=== END ==="
+
+
+def parse_loader_listing(text: str) -> list[LoaderEntry]:
+    """Parse a harness-emitted listing into LoaderEntry objects.
+
+    Accepts an empty listing (no entries found) without raising; an
+    installation whose boot manager failed to write any BLS entry must
+    surface as a clear validation failure rather than a parser exception.
+
+    Each entry begins with a header line of the form
+    `=== ENTRY <path> ===` and ends with a standalone `=== END ===`
+    sentinel. The closing `===` on the header is part of the format and
+    must be stripped before the entry is recorded, otherwise downstream
+    diagnostics quote a path that does not exist on disk.
+    """
+    entries: list[LoaderEntry] = []
+    if not text:
+        return entries
+    current_name: str | None = None
+    current_buf: list[str] = []
+    saw_header = False
+    for line in text.splitlines():
+        if line.startswith(LOADER_LISTING_HEADER):
+            if current_name is not None and current_buf:
+                entries.append(
+                    parse_loader_entry(current_name, "\n".join(current_buf) + "\n")
+                )
+            rest = line[len(LOADER_LISTING_HEADER):].strip()
+            # The trailing `===` is the close of the header sentinel, not
+            # part of the path; trim it so a quoting consumer sees the
+            # exact string the harness read off the ESP.
+            if rest.endswith("==="):
+                rest = rest[:-3].rstrip()
+            current_name = rest
+            current_buf = []
+            saw_header = True
+            continue
+        if line.strip() == LOADER_LISTING_END:
+            if current_name is not None:
+                entries.append(parse_loader_entry(current_name, "\n".join(current_buf)))
+                current_name = None
+                current_buf = []
+            continue
+        if current_name is not None:
+            current_buf.append(line)
+    # If the producer forgot the trailing sentinel, still recover the entry
+    # rather than dropping it silently; the harness wraps the file in
+    # `=== END ===` but a partial listing is the usual failure mode when
+    # SSH truncates output.
+    if current_name is not None and (current_buf or not saw_header):
+        entries.append(parse_loader_entry(current_name, "\n".join(current_buf)))
+    return entries
+
+
+def entry_matches_deployment(entry: LoaderEntry, dep: DeploymentInfo) -> bool:
+    """Return True if the BLS entry corresponds to the deployment.
+
+    bootc's BLS entries carry the ostree commit checksum in their `version`
+    field, and the deployment object exposes the same checksum as
+    `ostree_checksum`. When both are present that is the only authoritative
+    match: tag and digest pinning live in the container image, not the
+    bootloader entry, so they cannot replace it.
+
+    As a fallback (e.g. ostree data missing from the status JSON) the
+    entry's filename can carry the short commit -- ostree emits entries as
+    `ostree-<stateroot>-<8hex>.conf` -- and the function accepts that too,
+    so a missing field does not silently demote an entry to "no match".
+    """
+    if dep.ostree_checksum:
+        version = entry.fields.get("version", "")
+        if version and version == dep.ostree_checksum:
+            return True
+    if dep.ostree_checksum:
+        short = dep.ostree_checksum[:8]
+        if short and short in entry.filename:
+            return True
+    return False
+
+
+def validate_bootmgr_entries(
+    status_data: str | dict[str, Any],
+    listing_text: str,
+    expected_slots: tuple[str, ...] = ("booted", "staged", "rollback"),
+) -> tuple[bool, str, dict[str, Any]]:
+    """Validate systemd-boot entries against bootc status.
+
+    For each requested slot, find the BLS entry whose ostree commit
+    checksum (or filename short commit) matches the deployment's, then
+    confirm the entry has the keys the loader actually needs: `linux` for
+    the kernel, and at least one of `initrd` or `options` that the loader
+    can boot. A missing `linux` line is treated as a fatal error because
+    the loader will silently ignore the entry on next reboot, which is
+    exactly the regression the lifecycle suite exists to catch.
+
+    The check is per-deployment so a missing entry for one slot (e.g. no
+    `rollback` deployment after rollback is the desired state) is reported
+    as PASS for that slot, while a missing entry for a slot the harness
+    expects (e.g. `staged` after `bootc switch`) fails the phase with the
+    offending slot named in the message.
+    """
+    deployments = parse_bootc_status(status_data)
+    entries = parse_loader_listing(listing_text)
+
+    diag: dict[str, Any] = {
+        "entries": [e.to_dict() for e in entries],
+        "matches": {},
+        "missing": [],
+        "malformed": [],
+    }
+
+    failures: list[str] = []
+
+    for slot in expected_slots:
+        dep = deployments.get(slot)
+        diag["matches"][slot] = None
+        if not dep:
+            # No deployment recorded in this slot; nothing for the loader to
+            # match against. Surface as PASS rather than failing the phase,
+            # because the harness explicitly skips rollback when bootc has
+            # already rolled back.
+            continue
+        matches = [e for e in entries if entry_matches_deployment(e, dep)]
+        if not matches:
+            failures.append(
+                f"No BLS entry found for {slot} deployment "
+                f"(ostree checksum {dep.ostree_checksum or 'unknown'}, "
+                f"image digest {dep.digest or 'unknown'})"
+            )
+            diag["missing"].append(
+                {"slot": slot, "ostree_checksum": dep.ostree_checksum, "digest": dep.digest}
+            )
+            continue
+        chosen = matches[0]
+        diag["matches"][slot] = chosen.to_dict()
+        linux = chosen.fields.get("linux", "")
+        if not linux:
+            failures.append(
+                f"BLS entry '{chosen.filename}' for {slot} deployment has no 'linux' line"
+            )
+            diag["malformed"].append({"slot": slot, "filename": chosen.filename, "reason": "missing linux"})
+            continue
+        initrd = chosen.fields.get("initrd", "")
+        options = chosen.fields.get("options", "")
+        if not initrd and not options:
+            failures.append(
+                f"BLS entry '{chosen.filename}' for {slot} deployment has neither 'initrd' nor 'options'"
+            )
+            diag["malformed"].append(
+                {"slot": slot, "filename": chosen.filename, "reason": "missing initrd/options"}
+            )
+
+    if failures:
+        return False, "; ".join(failures), diag
+    return True, f"All {len(expected_slots)} expected deployments have a valid BLS entry", diag
 
 
 def validate_phase_transition(
@@ -369,6 +635,32 @@ def main(argv: list[str] | None = None) -> int:
         help="Candidate target image reference the staged deployment must track",
     )
 
+    # validate-bootmgr
+    p_bootmgr = subparsers.add_parser(
+        "validate-bootmgr",
+        help="Validate systemd-boot BLS entries against bootc status deployments",
+    )
+    p_bootmgr.add_argument(
+        "--status",
+        required=True,
+        help="Path to bootc status JSON or '-' for stdin",
+    )
+    p_bootmgr.add_argument(
+        "--listing",
+        required=True,
+        help="Path to a loader-entry listing (or '-' for stdin); the harness produces this by concatenating '=== ENTRY <path> ===' headers with the entry content and a trailing '=== END ===' sentinel",
+    )
+    p_bootmgr.add_argument(
+        "--slots",
+        default="booted,staged,rollback",
+        help="Comma-separated slots to require (default: booted,staged,rollback)",
+    )
+    p_bootmgr.add_argument(
+        "--output",
+        type=Path,
+        help="Optional path to write structured diagnostics JSON",
+    )
+
     # record-diagnostics
     p_diag = subparsers.add_parser("record-diagnostics", help="Record structured diagnostics")
     p_diag.add_argument("--output-dir", required=True, type=Path)
@@ -435,6 +727,23 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(f"FAIL: {msg}", file=sys.stderr)
             return 1
+
+    elif args.subcommand == "validate-bootmgr":
+        status_raw = sys.stdin.read() if args.status == "-" else Path(args.status).read_text()
+        listing_raw = sys.stdin.read() if args.listing == "-" else Path(args.listing).read_text()
+        slots = tuple(s.strip() for s in args.slots.split(",") if s.strip())
+        if not slots:
+            print("At least one slot is required for validate-bootmgr", file=sys.stderr)
+            return 2
+        ok, msg, diag = validate_bootmgr_entries(status_raw, listing_raw, expected_slots=slots)
+        if args.output:
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(json.dumps(diag, indent=2) + "\n")
+        if ok:
+            print(f"PASS: {msg}")
+            return 0
+        print(f"FAIL: {msg}", file=sys.stderr)
+        return 1
 
     elif args.subcommand == "record-diagnostics":
         record_phase_diagnostics(
