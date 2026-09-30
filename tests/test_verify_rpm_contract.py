@@ -446,7 +446,12 @@ class RepositorySecurityOptionTests(unittest.TestCase):
     def check(self, section: str, source: str = "utah-packages.repo") -> list[str]:
         parser = configparser.ConfigParser(interpolation=None)
         parser.read_string(section)
-        return self.module.check_repo_sections(parser, source, {"utah-packages"})
+        return self.module.check_repo_sections(
+            parser,
+            source,
+            {"utah-packages"},
+            expected_baseurls={"utah-packages": ("file:///etc/utah-packages",)},
+        )
 
     def test_a_proxy_on_an_allowlisted_section_is_rejected(self) -> None:
         errors = self.check(
@@ -669,7 +674,9 @@ class RepositoryPinManifestTests(unittest.TestCase):
                 with self.subTest(call=call):
                     with self.assertRaises(TypeError) as caught:
                         call()
-                    self.assertIn("requires expected_baseurls", str(caught.exception))
+                    message = str(caught.exception)
+                    self.assertIn("expected_baseurls", message)
+                    self.assertIn("required keyword-only argument", message)
 
             # ...while the deliberate id-only request still works, silently
             # accepting the unpinned URL it was told to ignore.

@@ -147,10 +147,10 @@ absent `sslverify` keeps DNF's verifying default and passes.
 
 The three entry points that apply this policy — `check_repo_sections`,
 `verify_repository_policy` and `verify_runtime_repository_policy` — take the pin
-map as a required argument with no usable default: omit it and they raise
-`TypeError` rather than quietly applying the id-only allowlist. Pass the
-manifest's `[repositories.baseurls]` mapping, or pass `None` when the caller
-genuinely wants the name-level policy alone.
+map as a required keyword-only argument with no default: omit it and Python
+raises `TypeError` rather than letting the call quietly fall back to the id-only
+allowlist. Pass the manifest's `[repositories.baseurls]` mapping, or pass `None`
+when the caller genuinely wants the name-level policy alone.
 
 The pinned package image is an RPM repository, not a runtime dependency: its
 contents are copied into the image so the package transaction is reproducible
