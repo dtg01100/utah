@@ -59,17 +59,38 @@ def main() -> int:
     # which asserts nothing about installation.
     resolved = Path("/usr/share/utah/contract.txt")
     if resolved.exists():
+        # The contract file is the dedup'd install set: Bluefin first, then
+        # each overlay section in the order install reads them. To attribute
+        # names back to their owning section, walk the contract in order and
+        # claim each name from the first section it appears in.
         contract = [line for line in resolved.read_text().split() if line]
         gnome_names = set(section(overlay, "gnome"))
         parity_names = set(section(overlay, "parity"))
         hardware_names = set(section(overlay, "hardware"))
         service_names = set(section(overlay, "services"))
-        overlay_names = gnome_names | parity_names | hardware_names | service_names
-        bluefin = [p for p in contract if p not in overlay_names]
-        gnome = [p for p in contract if p in gnome_names]
-        parity = [p for p in contract if p in parity_names]
-        hardware = [p for p in contract if p in hardware_names]
-        services = [p for p in contract if p in service_names]
+        fedora_names = set(section(args.manifest, "fedora"))
+        bluefin = []
+        gnome = []
+        parity = []
+        hardware = []
+        services = []
+        for pkg in contract:
+            if pkg in fedora_names:
+                bluefin.append(pkg)
+            elif pkg in gnome_names:
+                gnome.append(pkg)
+            elif pkg in parity_names:
+                parity.append(pkg)
+            elif pkg in hardware_names:
+                hardware.append(pkg)
+            elif pkg in service_names:
+                services.append(pkg)
+            # Anything outside fedora and the overlay sections is the
+            # version-specific Bluefin section (fedora_v<major>); treat it as
+            # Bluefin too. install writes the dedup'd contract in install
+            # order, so the name is the right one for "is this present".
+            else:
+                bluefin.append(pkg)
     else:
         bluefin = [p for p in section(args.manifest, "fedora") if p not in unavailable]
         gnome = section(overlay, "gnome")
@@ -77,13 +98,53 @@ def main() -> int:
         hardware = section(overlay, "hardware")
         services = section(overlay, "services")
     nvidia = list(NVIDIA_PACKAGES) if "nvidia" in flavor else []
-    expected = [*bluefin, *gnome, *parity, *hardware, *services, *nvidia]
+    # Mirror install-packages.contract(): a name in both [fedora] and one of
+    # the overlay sections (the #382 case for fish/zsh/ppp/libgda/libgda-sqlite)
+    # appears in the install set exactly once, with the Bluefin order winning.
+    # The verifier used to assert uniqueness without dedup, which started
+    # failing the moment a stale [unavailable] entry moved into the contract.
+    # Per-section counts track which section first owns each name so the
+    # printed totals add up to len(expected) rather than double-counting.
+    section_of: dict[str, str] = {}
+    counts: dict[str, int] = {"bluefin": 0, "gnome": 0, "parity": 0,
+                              "hardware": 0, "services": 0, "nvidia": 0}
+    expected: list[str] = []
+    for pkg in bluefin:
+        if pkg not in section_of:
+            section_of[pkg] = "bluefin"
+            counts["bluefin"] += 1
+            expected.append(pkg)
+    for pkg in gnome:
+        if pkg not in section_of:
+            section_of[pkg] = "gnome"
+            counts["gnome"] += 1
+            expected.append(pkg)
+    for pkg in parity:
+        if pkg not in section_of:
+            section_of[pkg] = "parity"
+            counts["parity"] += 1
+            expected.append(pkg)
+    for pkg in hardware:
+        if pkg not in section_of:
+            section_of[pkg] = "hardware"
+            counts["hardware"] += 1
+            expected.append(pkg)
+    for pkg in services:
+        if pkg not in section_of:
+            section_of[pkg] = "services"
+            counts["services"] += 1
+            expected.append(pkg)
+    for pkg in nvidia:
+        if pkg not in section_of:
+            section_of[pkg] = "nvidia"
+            counts["nvidia"] += 1
+            expected.append(pkg)
 
     print(
-        f"Verifying {len(bluefin)} Bluefin packages, {len(gnome)} GNOME desktop packages,"
-        f" {len(parity)} parity packages,"
-        f" {len(hardware)} firmware packages,"
-        f" {len(services)} desktop service packages, and {len(nvidia)} NVIDIA packages",
+        f"Verifying {counts['bluefin']} Bluefin packages, {counts['gnome']} GNOME desktop packages,"
+        f" {counts['parity']} parity packages,"
+        f" {counts['hardware']} firmware packages,"
+        f" {counts['services']} desktop service packages, and {counts['nvidia']} NVIDIA packages",
         flush=True,
     )
     if args.check:

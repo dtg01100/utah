@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-27",
+  "generated_at": "2026-09-30",
   "generator": "scripts/generate-site-data.py",
   "groups": [
     {
@@ -108,6 +108,7 @@
         "attr",
         "bash-completion",
         "bind-utils",
+        "bluez-cups",
         "buildah",
         "bzip2",
         "crypto-policies-scripts",
@@ -119,15 +120,22 @@
         "default-fonts-core-mono",
         "default-fonts-core-sans",
         "default-fonts-core-serif",
+        "desktop-file-utils",
         "file",
+        "fish",
         "fprintd",
         "fprintd-pam",
+        "fuse-libs",
         "glycin-thumbnailer",
         "google-noto-sans-math-fonts",
         "google-noto-sans-mono-vf-fonts",
         "google-noto-sans-symbols-2-fonts",
         "google-noto-serif-vf-fonts",
+        "gstreamer1-plugins-bad-free",
+        "gvfs-smb",
         "hostname",
+        "ibus-gtk4",
+        "intel-gmmlib",
         "iptables-nft",
         "iw",
         "keyutils",
@@ -135,25 +143,43 @@
         "langpacks-en",
         "langpacks-fonts-en",
         "less",
+        "libgda",
+        "libgda-sqlite",
         "libimobiledevice-utils",
+        "libnma",
+        "libpcap",
+        "libva-intel-media-driver",
+        "linux-atm-libs",
         "lm_sensors",
         "man-db",
         "pciutils",
+        "pipewire-config-raop",
         "pipewire-utils",
         "poppler-utils",
+        "ppp",
         "pulseaudio-utils",
         "python3-pip",
+        "python3-pydantic+email",
         "samba",
         "samba-client",
         "samba-common-tools",
+        "samba-winbind",
+        "samba-winbind-clients",
+        "samba-winbind-modules",
+        "setools-console",
+        "stix-fonts",
         "systemd-container",
+        "totem-pl-parser",
         "unzip",
         "vim-enhanced",
         "which",
         "wireless-regdb",
         "wpa_supplicant",
         "xxd",
-        "zip"
+        "zip",
+        "zram-generator",
+        "zram-generator-defaults",
+        "zsh"
       ],
       "title": "Base-image parity",
       "transient": false
@@ -162,11 +188,15 @@
       "blurb": "Device firmware the bootable base leaves out, so a driver that needs a blob can find one.",
       "id": "hardware",
       "packages": [
+        "alsa-sof-firmware",
+        "intel-vsc-firmware",
         "iwlegacy-firmware",
         "iwlwifi-dvm-firmware",
         "iwlwifi-mld-firmware",
         "iwlwifi-mvm-firmware",
-        "linux-firmware"
+        "libertas-firmware",
+        "linux-firmware",
+        "microcode_ctl"
       ],
       "title": "Firmware",
       "transient": false
@@ -199,8 +229,8 @@
     }
   ],
   "totals": {
-    "installed": 142,
-    "unavailable": 10
+    "installed": 172,
+    "unavailable": 7
   },
   "unavailable": [
     {
@@ -220,8 +250,10 @@
       "name": "firefox"
     },
     {
-      "issues": [],
-      "name": "fish"
+      "issues": [
+        253
+      ],
+      "name": "grub2-efi-ia32"
     },
     {
       "issues": [
@@ -231,31 +263,15 @@
     },
     {
       "issues": [
-        106
+        253
       ],
-      "name": "libgda"
-    },
-    {
-      "issues": [
-        106
-      ],
-      "name": "libgda-sqlite"
-    },
-    {
-      "issues": [
-        107
-      ],
-      "name": "ppp"
+      "name": "grub2-tools-extra"
     },
     {
       "issues": [
         83
       ],
       "name": "slitherer"
-    },
-    {
-      "issues": [],
-      "name": "zsh"
     }
   ]
 }

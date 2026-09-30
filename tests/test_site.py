@@ -88,11 +88,15 @@ class GeneratedDataTests(unittest.TestCase):
         self.assertEqual(shown & gaps, set())
 
     def test_tracking_issues_come_only_from_the_tracked_by_clause(self):
-        """ppp's entry cites #104 and #100 to draw a comparison and is tracked
-        by #107. Scraping every number in the paragraph attributed all three to
-        ppp, which sent readers to the wrong issues."""
+        """grub2-efi-x64-cdboot's entry cites #253 (its own tracking issue) and
+        rolls grub2-efi-ia32 and grub2-tools-extra into the same fix; scraping
+        every "#123" in the paragraph would attribute all three names to
+        whichever number the parser saw first. The Tracked by clause is the
+        only source of issue numbers."""
         reasons = self.generator.unavailable_reasons(ROOT / "packages/utah.toml")
-        self.assertEqual(reasons.get("ppp"), [107])
+        self.assertEqual(reasons.get("grub2-efi-x64-cdboot"), [253])
+        self.assertEqual(reasons.get("grub2-efi-ia32"), [253])
+        self.assertEqual(reasons.get("grub2-tools-extra"), [253])
         # Cross-repository references (utah-packages#112) are not this repo's
         # issue numbers and must not be rendered as links into it.
         self.assertEqual(reasons.get("firefox"), [35])

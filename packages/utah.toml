@@ -90,8 +90,11 @@ packages = [
 # Aligned with Dakota where it ships the same piece: the connectivity check,
 # ALSA use-case profiles, the language pack and the core font set.
 #
-# Left out, with the dependency the pinned repositories do not carry:
-#   default-fonts-core-math    needs stix-fonts (utah-packages#147)
+# Left out, with the dependency the pinned repositories still do not carry:
+#   default-fonts-core-math    the factory now publishes stix-fonts (#382),
+#                              so the dependency half of this gap is closed;
+#                              the font package join itself is a separate
+#                              parity ticket (#263).
 #
 # Wi-Fi, printing, fingerprint login and PDF tools arrived with the factory
 # image published 2026-09-25 (sha256:9e17ca2c), the first publish since
@@ -191,14 +194,68 @@ packages = [
     "buildah",
     # Network filesystems: base-image parity measured from the published
     # Bluefin image (baselines/GAP.md, #263). Bluefin inherits the full samba
-    # closure from Silverblue; samba resolves today against the pinned
-    # utah-packages repository. samba-winbind and samba-winbind-clients do
-    # not yet resolve: they require libvarlink, which utah-packages does not
-    # currently ship (`nothing provides libvarlink.so.0()(64bit)`). cifs-utils,
-    # nfs-utils, rpcbind, autofs and davfs2 are also not yet in any enabled
-    # repository. All of these stay out until utah-packages builds their
-    # missing dependencies (#263).
+    # closure from Silverblue; samba, samba-winbind, samba-winbind-clients and
+    # samba-winbind-modules all resolve today against the pinned utah-packages
+    # repository (#382). cifs-utils, nfs-utils, rpcbind, autofs and davfs2 are
+    # not yet in any enabled repository and stay out until utah-packages builds
+    # their missing dependencies (#263).
     "samba",
+    "samba-winbind",
+    "samba-winbind-clients",
+    "samba-winbind-modules",
+    # zram swap: the default config and generator both resolve against the
+    # pinned factory repo, so the systemd unit zram-generator@.service is
+    # wired up out of the box (#382). zram-generator-defaults ships /usr/lib/
+    # udev/rules.d/90-zram.rules and the generator's own configuration.
+    "zram-generator",
+    "zram-generator-defaults",
+    # Shells Bluefin installs as system shells (#382). fish needs a vendored
+    # Rust build against Fedora's crate set, which the factory now provides;
+    # zsh used to fail on a texi2html/ruby path conflict and is no longer
+    # blocked by either repo. Both names now resolve against utah-packages.
+    "fish",
+    "zsh",
+    # PPP support, which Hummingbird's NetworkManager-ppp Requires (#382).
+    # Same shape as avahi (#104): the plugin was shipped without its daemon.
+    # The factory now provides ppp, so the plugin installs and PPPoE/PPTP
+    # work without a follow-up factory request.
+    "ppp",
+    # Runtime libraries for the maintained Copyous extension, bluefin#1210.
+    # Both names resolve against utah-packages now (#382); the [unavailable]
+    # entry that named libgda-sqlite as a separate subpackage was wrong --
+    # libgda-sqlite ships in libgda's SRPM and the factory's libgda recipe
+    # produces it.
+    "libgda",
+    "libgda-sqlite",
+    # Misc base-image parity (#382). Bluefin ships all of these from Fedora's
+    # Silverblue base; Hummingbird's bootable base does not, the factory now
+    # builds each, and every name below resolves against the pinned factory
+    # image. Verified by package-resolution against sha256:0f04cff...
+    "bluez-cups",
+    "desktop-file-utils",
+    "fuse-libs",
+    "gstreamer1-plugins-bad-free",
+    "gvfs-smb",
+    "ibus-gtk4",
+    "libnma",
+    "libpcap",
+    "linux-atm-libs",
+    "pipewire-config-raop",
+    "python3-pydantic+email",
+    "setools-console",
+    "totem-pl-parser",
+    # Math fonts (utah-packages#147). The factory now publishes stix-fonts,
+    # so the gap that kept default-fonts-core-math out of [parity] is closed
+    # on the package side. The actual font package join still has its own
+    # parity ticket (#263) and stays out of this commit.
+    "stix-fonts",
+    # Intel GPU/media stack, replacing Fedora's builds with the factory's
+    # Hummingbird rebuilds (#382). The long comment at the top of this file
+    # explains why [multimedia_overrides] is not the right home for these
+    # names on Utah: this image does not enable fedora-multimedia, so the
+    # Bluefin override is moot, and the factory is the source.
+    "intel-gmmlib",
+    "libva-intel-media-driver",
 ]
 
 [hardware]
@@ -225,10 +282,16 @@ packages = [
 # arrive through the Recommends, which the install keeps: the image
 # transaction does not set install_weak_deps=False.
 #
-# microcode_ctl is deliberately absent. It is in neither enabled repository,
-# so naming it would fail the transaction outright rather than record a gap;
-# CPU errata updates need a factory recipe first and are worth their own
-# issue.
+# microcode_ctl joined the contract here (#382): the factory now builds it,
+# so the package that was deliberately absent in #97 because no source
+# provided it is now installable. CPU errata updates land on first boot
+# through the kernel update path.
+#
+# alsa-sof-firmware carries Sound Open Firmware blobs for Intel/AMD audio
+# DSPs (the SOF driver in the kernel). libertas-firmware carries Marvell
+# 8xxx libertas wifi firmware. intel-vsc-firmware carries Intel Vision
+# Sensing Controller firmware for cameras that need it. None of these are
+# Recommends of linux-firmware, so they install here as separate names.
 #
 # Necessary, not sufficient: with the firmware present the driver loads, but
 # NetworkManager still does not manage the interface until NetworkManager-wifi
@@ -236,10 +299,14 @@ packages = [
 # records why.
 packages = [
     "linux-firmware",
+    "alsa-sof-firmware",
+    "intel-vsc-firmware",
+    "iwlegacy-firmware",
     "iwlwifi-dvm-firmware",
     "iwlwifi-mvm-firmware",
     "iwlwifi-mld-firmware",
-    "iwlegacy-firmware",
+    "libertas-firmware",
+    "microcode_ctl",
 ]
 
 [build]
@@ -305,20 +372,6 @@ packages = [
 #   [unavailable] into the contract once utah-packages builds both; tracked by
 #   #10.
 #
-# fish
-#   Fedora's fish spec uses %cargo_generate_buildrequires, which requires
-#   every Rust crate as a system RPM (rust-anstyle, rust-clap, ...). Fedora
-#   44 does not ship Rust crate binary packages -- they exist only in
-#   Rawhide -- so the buildroot cannot satisfy them. Building fish needs a
-#   vendored/cargo-fetch rebuild of the spec rather than the system-crate
-#   model.
-#
-# zsh
-#   The HTML docs build target pulls texi2html, which drags Fedora's ruby
-#   (ruby-default-gems) into a buildroot that already carries Hummingbird's
-#   ruby4.0. The two conflict on file paths, so the transaction fails. Needs
-#   either a ruby exclusion in the buildroot or dropping the html subpackage.
-#
 # firefox
 #   Utah installs org.mozilla.firefox as a Flatpak through the desktop
 #   contract. The RPM browser is deliberately excluded, while mozjs140 is
@@ -331,45 +384,25 @@ packages = [
 #   its Qt WebEngine dependency closure. Match the factory's installer policy
 #   until that path is supported; tracked by #83.
 #
-# libgda, libgda-sqlite
-#   Upstream added both as runtime dependencies for the maintained Copyous
-#   extension (bluefin#1210). Neither is in the pinned factory image or in
-#   public-hummingbird-x86_64-rpms -- Hummingbird carries no package whose
-#   name contains gda at all. One factory recipe would cover both, because
-#   libgda-sqlite is a subpackage of the libgda SRPM rather than its own
-#   source. Tracked by #106.
-#
-# ppp
-#   In neither repository, and nothing in either Provides it. This one costs
-#   more than dial-up: Hummingbird ships NetworkManager-ppp (1.58.0-1.hum1
-#   and 1.58.1-1.hum1) whose metadata carries Requires: ppp, so that plugin
-#   is uninstallable from their own repository and NetworkManager's PPPoE and
-#   PPTP paths cannot be installed at all. The same shape as avahi (#104):
-#   a plugin shipped without the daemon behind it.
-#   Tracked by #107.
-#
-# grub2-efi-x64-cdboot
-#   The factory supplies it, but it must be the same build as grub2-efi-x64,
-#   and the factory's grub2 is built for EFI/hummingbird. Installing it
-#   replaced the base's Fedora GRUB, the one paired with the base's Fedora
-#   shim, and installed systems could not boot. utah-packages.repo now
-#   excludes grub2*, which makes cdboot unavailable too. Nothing in Utah uses
-#   it (it is Bluefin parity). Returns when utah-packages#238 publishes a grub2
-#   built with efi_vendor=fedora. Tracked by #253.
-#
-# pipewire-libs-extra is supplied by the pinned September 10 factory candidate
-# and returns to the install contract (#35).
+# grub2-efi-x64-cdboot, grub2-efi-ia32, grub2-tools-extra
+#   All three live in the factory, but the factory's grub2 is built with
+#   Hummingbird's efi_vendor (EFI/hummingbird). Installing any of them
+#   replaces the base's Fedora GRUB -- the one paired with the base's Fedora
+#   shim in EFI/fedora -- and the installed system no longer boots. The
+#   repo-wide `excludepkgs=grub2*` in packages/utah-packages.repo blocks all
+#   three for the same reason, which is why they are listed here even though
+#   the factory repodata carries them (#382). They return to the install
+#   contract once utah-packages#238 publishes a grub2 with efi_vendor=fedora;
+#   the first one (cdboot) was tracked here as #253, and the other two roll
+#   into the same fix and tracking issue. Tracked by #253.
 packages = [
     "grub2-efi-x64-cdboot",
+    "grub2-efi-ia32",
+    "grub2-tools-extra",
     "anaconda-live",
     "evolution-ews-core",
     "firefox",
-    "fish",
-    "libgda",
-    "libgda-sqlite",
-    "ppp",
     "slitherer",
-    "zsh",
 ]
 
 # nvidia-container-toolkit was recorded here as a second gap. It is not one, and

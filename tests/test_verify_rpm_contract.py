@@ -191,15 +191,21 @@ class CheckModeTests(unittest.TestCase):
         self.assertIn("1 NVIDIA packages", nvidia.stdout)
         self.assertIn("1 NVIDIA packages", gaming.stdout)
 
-    def test_a_duplicate_across_sections_is_rejected(self) -> None:
-        """A package listed twice would be verified twice and counted twice."""
+    def test_a_duplicate_across_sections_is_deduplicated(self) -> None:
+        """A name in both [fedora] and an overlay section appears in the install
+        set exactly once, owned by the Bluefin section (#382 case for the
+        stale-[unavailable] move of fish/zsh/ppp/libgda/libgda-sqlite into
+        [parity]). The verifier used to assert uniqueness without dedup, which
+        started failing the moment those entries moved."""
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
             manifest = write_manifest(directory, ["bash", "fastfetch"])
             overlay = write_overlay(directory, parity=["fastfetch"])
             result = self.run_check(manifest, overlay)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("duplicate package names", result.stderr)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # Two package names, fastfetch dedup'd into the Bluefin bucket.
+        self.assertIn("Verifying 2 Bluefin packages", result.stdout)
+        self.assertIn("0 parity packages", result.stdout)
 
     def test_check_mode_never_consults_rpm(self) -> None:
         """--check asserts nothing about installation, so it must not query rpm."""

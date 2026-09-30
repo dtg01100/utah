@@ -67,8 +67,8 @@ than being noticed later.
 | | count |
 | --- | --- |
 | Bluefin contract installed | **57** |
-| Utah additions (GNOME 51, base-image parity, device firmware, desktop services) | 85 |
-| Genuinely unavailable | **10** |
+| Utah additions (GNOME 51, base-image parity, device firmware, desktop services) | 115 |
+| Genuinely unavailable | **7** |
 
 The install writes its resolved list to `/usr/share/utah/contract.txt` and the
 verify step asserts *that file*, so the two cannot disagree. These counts are
@@ -110,14 +110,17 @@ This is the honest list, and it is why the label above says pre-alpha.
   `systemctl is-enabled bootc-fetch-apply-updates.timer` and can re-assert the
   mask (`systemctl mask --now bootc-fetch-apply-updates.timer bootc-fetch-apply-updates.service`)
   if a merged `/etc` wants symlink remains on disk (links #17, #101).
-- **Wi-Fi needs a package the factory has not built yet.** The image ships no
+- **Wi-Fi is wired through, with one corner still sharp.** The image ships no
   device firmware of its own — the bootable base carries none, and Bluefin only
   appears to because Fedora's Silverblue base supplies `linux-firmware`. `[hardware]`
-  in `packages/utah.toml` now installs it, so a wireless driver can load its
-  blob. That is necessary but not sufficient: Hummingbird's `NetworkManager-wifi`
-  requires `wireless-regdb` and a supplicant, none of which exists in any
-  enabled repository, so NetworkManager still does not manage the interface
-  (`utah-packages#136`; the pin that would carry them is `#126`).
+  in `packages/utah.toml` installs `linux-firmware` plus the four iwlwifi
+  Intel-only firmware packages (the only wireless blobs not covered by
+  `linux-firmware`'s Recommends). `[parity]` carries `wpa_supplicant`,
+  `wireless-regdb` and `iw`, so `NetworkManager-wifi` resolves and the radio
+  attaches. The same shape that previously left this bullet open (a plugin
+  shipped without the daemon behind it, then the daemon behind a missing
+  metadata layer) is now closed for `ppp` and the modem stack too — see the
+  `ppp` entry in `[parity]` (#382).
 - **The NVIDIA and gaming flavors are unproven.** The OGC kernel compiles with
   `sched_ext` and `binderfs` genuinely enabled, and the NVIDIA open module
   compiles for the base kernel. The module against the OGC kernel, the driver

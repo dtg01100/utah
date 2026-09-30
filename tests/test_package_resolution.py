@@ -170,7 +170,7 @@ class PackageResolutionTests(unittest.TestCase):
             overlay = dirpath / "utah.toml"
             base.write_text('[fedora]\npackages=["base"]\n')
             overlay.write_text('[gnome]\npackages=[]\n')
-            
+
             # Missing hummingbird
             repos_dir = dirpath / "repos"
             repos_dir.mkdir()
@@ -197,12 +197,30 @@ class ParityContractTests(unittest.TestCase):
         # overlap with [build]: configure-services.sh removes the build tooling
         # after the extension build and has to keep unzip for the same reason
         # it is listed here.
+        #
+        # #382 adds a second deliberate overlap: fish, zsh, ppp, libgda and
+        # libgda-sqlite were recorded in [unavailable] as factory/buildroot
+        # blockers, then moved into [parity] once the blockers cleared. They
+        # are still in bluefin.toml's [fedora] section, and that is fine:
+        # contract() deduplicates while preserving order, so they end up in
+        # the install set exactly once. The set of names with a tracked
+        # overlap is asserted explicitly so any future accidental move is
+        # caught.
         parity = installer.section(self.OVERLAY, "parity")
         self.assertEqual(len(set(parity)), len(parity))
         others = set(installer.section(ROOT / "packages/bluefin.toml", "fedora"))
         for name in ("gnome", "services", "unavailable"):
             others |= set(installer.section(self.OVERLAY, name))
-        self.assertEqual(sorted(set(parity) & others), [])
+        tracked_overlap = {"fish", "zsh", "ppp", "libgda", "libgda-sqlite"}
+        overlap = sorted(set(parity) & others)
+        unexpected = [name for name in overlap if name not in tracked_overlap]
+        self.assertEqual(
+            unexpected, [],
+            f"[parity] now overlaps with bluefin[fedora]/utah elsewhere: "
+            f"{unexpected}; update tracked_overlap if this is intentional")
+        # The named overlap must still be present, otherwise the test has
+        # drifted from the manifest and is silently passing.
+        self.assertEqual(sorted(set(parity) & tracked_overlap), sorted(tracked_overlap))
         self.assertEqual(sorted(set(parity) & set(installer.section(self.OVERLAY, "build"))), ["unzip"])
         removal = [line for line in (ROOT / "scripts/configure-services.sh").read_text().splitlines()
                    if "-y remove" in line]
