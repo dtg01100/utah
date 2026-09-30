@@ -1,7 +1,7 @@
 ---
 name: package-contract
 version: "1.1"
-last_updated: "2026-09-22"
+last_updated: "2026-09-30"
 id: package-contract
 one_line_purpose: Maintain Bluefin package parity and Utah's overlay manifest.
 entry_point: docs/skills/package-contract.md
