@@ -102,9 +102,12 @@ precede base Hummingbird packages (`priority=10`). Repositories without this mar
 (such as `nvidia-container-toolkit` or builder-only `fedora-44`) are excluded from
 the desktop package transaction.
 
-The pinned package image is an RPM repository, not a runtime dependency: its
-contents are copied into the image so the package transaction is reproducible
-and does not depend on a mutable mirror (`Containerfile` L41-44).
+The pinned package image is an RPM repository, not a runtime dependency. It is
+bind-mounted into the RUN steps that install from it (`Containerfile` L61-69)
+and never copied into a layer: a COPY of the whole ~4 GB repository would leave
+a permanent layer behind, so reproducibility now comes from the digest-pinned
+`packages` stage being the only source the package transaction can see rather
+than from the repository contents living in the image.
 
 ## Supply-chain download verification
 

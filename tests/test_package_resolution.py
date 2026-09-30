@@ -234,6 +234,13 @@ class ParityContractTests(unittest.TestCase):
         self.assertIn(f"  - {target}\n", stderr.getvalue())
 
     def test_parity_ref_exists_and_contains_valid_commit_sha(self):
+        """Verifies the #152 pinned-parity-ref invariant.
+
+        These assertions belong to the pinned-ref work (#152), not the
+        contract-composition change that bundled them in; they pin the
+        parity revision the build must track. Kept in ParityContractTests
+        because that is where the parity file is read.
+        """
         ref_file = ROOT / "packages/.bluefin-parity-ref"
         self.assertTrue(ref_file.is_file(), "packages/.bluefin-parity-ref must exist")
         ref = ref_file.read_text().strip()
@@ -244,6 +251,12 @@ class ParityContractTests(unittest.TestCase):
         )
 
     def test_check_parity_recipe_guards_the_ref_format(self):
+        """Covers the #152 pinned-ref format guard in the Justfile.
+
+        Part of the pinned-ref work (#152) that was bundled into an
+        unrelated PR; asserts the check-parity recipe rejects a ref that is
+        not a full 40-character SHA before it is fetched.
+        """
         justfile = (ROOT / "Justfile").read_text()
         self.assertIn("packages/.bluefin-parity-ref", justfile)
         self.assertRegex(

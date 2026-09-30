@@ -1,7 +1,7 @@
 ---
 name: desktop-contract
 version: "1.0"
-last_updated: "2026-09-22"
+last_updated: "2026-09-30"
 id: desktop-contract
 one_line_purpose: Maintain Utah identity, Bluefin desktop defaults, and first-boot Flatpak policy.
 entry_point: docs/skills/desktop-contract.md
@@ -64,6 +64,39 @@ The TOML's sections are the contract's table of contents:
   (e.g. switching from Bluefin) do not carry active `timers.target.wants`
   symlinks that bypass uupd staging or undo manual rollbacks. Switchers can
   also manually verify or mask them if a local `/etc` symlink was preserved.
+
+## Tolerating a non-zero exit in a unit file
+
+Tolerate an expected non-zero exit per command with the `ExecStart=-` prefix
+rather than with `SuccessExitStatus=`. `SuccessExitStatus=1` is unit-wide, so
+it also masks a genuine exit 1 from a *later* command in the same unit — for
+example the `touch` in `flatpak-nuke-fedora.service` that stamps
+`/var/lib/flatpak/.fedora-initialized`, whose real failure would be reported as
+success.
+
+Two rules follow:
+
+- A unit that must ignore something possibly being absent (a remote, a file)
+  takes `ExecStart=-` on that one command. Nothing else in the unit is affected.
+- Create the parent directory in an `ExecStartPre=` when the stamp target's
+  directory is absent on a freshly installed image — `/var/lib/flatpak` is, so
+  `flatpak-nuke-fedora.service` runs `mkdir -p` before `touch`.
+
+Do not reach for `flatpak remote-delete --force` to make a re-run succeed: it
+only changes the "remote has installed refs" guard, so on a non-interactive
+rebase it deletes the `fedora` remote *along with* the apps installed from it,
+leaving those refs with no origin to update from. The `-` prefix alone already
+covers the missing-remote case.
+
+This rule is enforced, not just documented:
+`tests/test_systemd_exit_tolerance.py` scans every unit shipped under
+`system_files/` and `iso/live/` and fails if one carries a
+`SuccessExitStatus=`, an unprefixed `remote-delete`, or a `--force` on one. It
+runs inside `just test`, which `just check` invokes, so the `--force` variant
+of a `remote-delete` fails the build instead of waiting to be caught in review.
+The scan covers unit files only: a shell script may still use `--force` on a
+throwaway remote it created itself, as `iso/live/src/install-flatpaks.sh` does
+for the live image's own `installer-local` remote.
 
 ## GNOME extensions are pinned submodules
 
