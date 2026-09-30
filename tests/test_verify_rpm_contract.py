@@ -34,6 +34,16 @@ SCRIPT = ROOT / "scripts" / "verify-rpm-contract.py"
 # exercise that branch redirect it into a temporary directory.
 RESOLVED_CONTRACT = "/usr/share/utah/contract.txt"
 
+# The origins packages/*.repo actually declare, used to give a test overlay
+# pins that match reality by default.
+DEFAULT_REPO_BASEURLS = {
+    "public-hummingbird-x86_64-rpms":
+        "https://packages.redhat.com/api/pulp-content/public-hummingbird/x86_64/",
+    "utah-packages": "file:///etc/utah-packages",
+    "nvidia-container-toolkit":
+        "https://nvidia.github.io/libnvidia-container/stable/rpm/$basearch",
+}
+
 
 def load_module():
     """Import the script by path; its filename is not a valid module name."""
@@ -64,6 +74,7 @@ def write_overlay(
     gnome_versions: dict[str, str] | None = None,
     allowed_repos: list[str] | None = None,
     factory: list[str] | None = None,
+    repo_baseurls: dict[str, list[str]] | None = None,
 ) -> Path:
     path = directory / "utah.toml"
     gnome_pkgs = gnome or []
@@ -77,6 +88,15 @@ def write_overlay(
     versions_toml = "\n".join(f'"{k}" = "{v}"' for k, v in versions.items())
     repos_toml = ", ".join(f'"{r}"' for r in repos)
     factory_toml = ", ".join(f'"{f}"' for f in factory_pkgs)
+    # Every allowlisted id carries a pinned origin; repo_baseurls overrides that
+    # per id, and omitting one is itself a case the verifier has to reject, so a
+    # test asking for that passes repo_baseurls with the id left out.
+    pins = repo_baseurls if repo_baseurls is not None else {
+        r: [DEFAULT_REPO_BASEURLS.get(r, f"https://repos.example.invalid/{r}")] for r in repos
+    }
+    pins_toml = "".join(
+        f'"{r}" = [' + ", ".join(f'"{u}"' for u in urls) + "]\n" for r, urls in pins.items()
+    )
     path.write_text(
         toml_section("gnome", gnome_pkgs)
         + (f"[gnome.versions]\n{versions_toml}\n" if versions_toml else "[gnome.versions]\n")
@@ -84,6 +104,7 @@ def write_overlay(
         + toml_section("services", services or [])
         + toml_section("unavailable", unavailable or [])
         + f"[repositories]\nallowed = [{repos_toml}]\n"
+        + (f"[repositories.baseurls]\n{pins_toml}" if pins_toml else "")
         + f"[factory]\npackages = [{factory_toml}]\n"
     )
     return path
@@ -351,12 +372,36 @@ class VerifyModeTests(unittest.TestCase):
             # The same run against a root carrying only approved repositories passes.
             (policy_root / "etc/yum.repos.d/fedora.repo").unlink()
             (policy_root / "etc/yum.repos.d/utah-packages.repo").write_text(
-                "[utah-packages]\nname=utah\nenabled=1\n"
+                "[utah-packages]\nname=utah\nenabled=1\nbaseurl=file:///etc/utah-packages\n"
             )
             code, out = self.run_main(
                 manifest, overlay, {"bash"}, policy_root=policy_root
             )
         self.assertEqual(code, 0, out)
+
+    def test_the_pinned_origin_is_checked_at_runtime_too(self) -> None:
+        """End to end: the approved id, serving somewhere else, fails the build.
+
+        The name is on the allowlist, so the id-only check passes. Only the
+        pinned baseurl says whether the packages came from where Utah says they
+        did, which is the whole point of the repository policy.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            manifest = write_manifest(directory, ["bash"])
+            overlay = write_overlay(directory)
+            policy_root = directory / "root"
+            (policy_root / "etc/yum.repos.d").mkdir(parents=True)
+            (policy_root / "etc/yum.repos.d/utah-packages.repo").write_text(
+                "[utah-packages]\nname=utah\nenabled=1\nbaseurl=https://evil.example.invalid/x\n"
+            )
+            stderr = io.StringIO()
+            with patch.object(sys, "stderr", stderr):
+                code, _ = self.run_main(
+                    manifest, overlay, {"bash"}, policy_root=policy_root
+                )
+        self.assertEqual(code, 1)
+        self.assertIn("unpinned baseurl", stderr.getvalue())
 
 
     def test_the_runtime_policy_root_rejects_a_secure_option_override(self) -> None:
@@ -401,7 +446,12 @@ class RepositorySecurityOptionTests(unittest.TestCase):
     def check(self, section: str, source: str = "utah-packages.repo") -> list[str]:
         parser = configparser.ConfigParser(interpolation=None)
         parser.read_string(section)
-        return self.module.check_repo_sections(parser, source, {"utah-packages"})
+        return self.module.check_repo_sections(
+            parser,
+            source,
+            {"utah-packages"},
+            expected_baseurls={"utah-packages": ("file:///etc/utah-packages",)},
+        )
 
     def test_a_proxy_on_an_allowlisted_section_is_rejected(self) -> None:
         errors = self.check(
@@ -547,6 +597,112 @@ class ProvenanceReportTests(unittest.TestCase):
 
         self.assertEqual(code, 1, out)
         self.assertIn("could not retain provenance report", stderr.getvalue())
+
+
+class RepositoryPinManifestTests(unittest.TestCase):
+    """The manifest has to name an origin for every id it allows.
+
+    Without [repositories.baseurls] the policy degrades to a list of labels the
+    repository files carry about themselves, which is the thing the finding on
+    #330 is about: an approved id pointing elsewhere reads as approved.
+    """
+
+    def run_check(self, manifest: Path, overlay: Path):
+        env = {**os.environ, "IMAGE_FLAVOR": "main"}
+        return subprocess.run(
+            [sys.executable, str(SCRIPT), "--check", str(manifest), str(overlay)],
+            capture_output=True, text=True, env=env, cwd=str(ROOT),
+        )
+
+    def test_an_allowlisted_id_with_no_pin_fails_the_check(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            manifest = write_manifest(directory, ["bash"])
+            overlay = write_overlay(
+                directory, repo_baseurls={"utah-packages": ["file:///etc/utah-packages"]}
+            )
+            result = self.run_check(manifest, overlay)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("[repositories.baseurls]", result.stderr)
+        self.assertIn("nvidia-container-toolkit", result.stderr)
+
+    def test_a_pin_that_is_not_a_list_fails_the_check(self) -> None:
+        """A scalar pin would iterate per character and pin the id to letters."""
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            manifest = write_manifest(directory, ["bash"])
+            overlay = write_overlay(directory)
+            overlay.write_text(
+                overlay.read_text().replace(
+                    '"utah-packages" = ["file:///etc/utah-packages"]',
+                    '"utah-packages" = "file:///etc/utah-packages"',
+                )
+            )
+            result = self.run_check(manifest, overlay)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("not a list of URL strings", result.stderr)
+        self.assertIn("utah-packages", result.stderr)
+
+    def test_a_caller_that_omits_the_pin_map_is_refused(self) -> None:
+        """None is the opt-in to the id-only policy; silence is not.
+
+        Every production caller passes the manifest's [repositories.baseurls], so
+        a caller that forgets it is a bug, and a silent None would downgrade the
+        check this policy exists to make to a name check with no error.
+        """
+        verifier = load_module()
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.read_string(
+            "[utah-packages]\nname=utah\nenabled=1\n"
+            "baseurl=https://evil.example.invalid/x\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            repos_dir = Path(tmp)
+            (repos_dir / "utah-packages.repo").write_text(
+                "[utah-packages]\nname=utah\nenabled=1\n"
+                "baseurl=https://evil.example.invalid/x\n"
+            )
+            for call in (
+                lambda: verifier.check_repo_sections(
+                    parser, "utah-packages.repo", {"utah-packages"}
+                ),
+                lambda: verifier.verify_repository_policy(
+                    repos_dir, {"utah-packages"}
+                ),
+                lambda: verifier.verify_runtime_repository_policy({"utah-packages"}),
+            ):
+                with self.subTest(call=call):
+                    with self.assertRaises(TypeError) as caught:
+                        call()
+                    message = str(caught.exception)
+                    self.assertIn("expected_baseurls", message)
+                    self.assertIn("required keyword-only argument", message)
+
+            # ...while the deliberate id-only request still works, silently
+            # accepting the unpinned URL it was told to ignore.
+            self.assertEqual(
+                verifier.check_repo_sections(
+                    parser, "utah-packages.repo", {"utah-packages"},
+                    expected_baseurls=None,
+                ),
+                [],
+            )
+
+    def test_a_missing_baseurls_section_fails_the_check(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            manifest = write_manifest(directory, ["bash"])
+            overlay = directory / "utah.toml"
+            overlay.write_text(
+                toml_section("gnome", [])
+                + "[gnome.versions]\n"
+                + toml_section("unavailable", [])
+                + '[repositories]\nallowed = ["utah-packages"]\n'
+                + toml_section("factory", [])
+            )
+            result = self.run_check(manifest, overlay)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("missing [repositories.baseurls] section", result.stderr)
 
 
 class MissingOverlayTests(unittest.TestCase):

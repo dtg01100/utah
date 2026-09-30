@@ -7,6 +7,7 @@ import importlib.util
 import json
 import subprocess
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -24,6 +25,285 @@ def load_module(name: str):
 
 
 verifier = load_module("verify-rpm-contract")
+
+
+class RepositoryBaseurlPinTests(unittest.TestCase):
+    """The allowlist is by id, so the baseurl has to be pinned separately.
+
+    An id is a label the repository file carries about itself: a [utah-packages]
+    section whose baseurl points somewhere else is still named utah-packages to
+    every check that reads the name alone, so an id-only allowlist certifies a
+    label rather than an origin. These tests are the ones that would fail if the
+    id were trusted on its own.
+    """
+
+    PINS = {"utah-packages": ("file:///etc/utah-packages",)}
+
+    def policy_errors(self, body: str) -> list[str]:
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.read_string(body)
+        return verifier.check_repo_sections(
+            parser, "utah-packages.repo", {"utah-packages"},
+            expected_baseurls=self.PINS,
+        )
+
+    def test_a_pinned_baseurl_passes(self):
+        self.assertEqual(
+            self.policy_errors(
+                "[utah-packages]\nname=utah\nenabled=1\nbaseurl=file:///etc/utah-packages\n"
+            ),
+            [],
+        )
+
+    def test_the_approved_id_pointing_elsewhere_fails(self):
+        errors = self.policy_errors(
+            "[utah-packages]\nname=utah\nenabled=1\nbaseurl=https://evil.example.invalid/x\n"
+        )
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("'utah-packages'", errors[0])
+        self.assertIn("unpinned baseurl", errors[0])
+
+    def test_an_option_key_in_any_case_and_a_trailing_slash_are_the_same_origin(self):
+        # What this actually exercises: configparser lowercases option keys, so
+        # `BASEURL=` reads as `baseurl=`, and a trailing slash is not a different
+        # origin. It says nothing about host case -- that is the test below.
+        self.assertEqual(
+            self.policy_errors(
+                "[utah-packages]\nname=utah\nenabled=1\nBASEURL=file:///etc/utah-packages/\n"
+            ),
+            [],
+        )
+
+    def test_scheme_and_host_case_are_the_same_origin(self):
+        # `normalize_baseurl` lowercases the scheme and the host but compares the
+        # path case-sensitively. Without this case the whole branch is untested,
+        # and a typo there would start rejecting a spelling that is in fact the
+        # same repository.
+        pins = {"hummingbird": ("https://packages.redhat.com/uhf/ubi9/appstream",)}
+        for spelling in (
+            "https://packages.redhat.com/uhf/ubi9/appstream",
+            "HTTPS://Packages.RedHat.COM/uhf/ubi9/appstream",
+            "https://packages.redhat.com/uhf/ubi9/appstream/",
+        ):
+            with self.subTest(spelling=spelling):
+                parser = configparser.ConfigParser(interpolation=None)
+                parser.read_string(
+                    f"[hummingbird]\nname=hb\nenabled=1\nbaseurl={spelling}\n"
+                )
+                self.assertEqual(
+                    verifier.check_repo_sections(
+                        parser, "hummingbird.repo", {"hummingbird"},
+                        expected_baseurls=pins,
+                    ),
+                    [],
+                )
+
+    def test_a_path_case_difference_is_not_the_same_origin(self):
+        # The other half of the branch: only scheme and host are case-folded.
+        pins = {"hummingbird": ("https://packages.redhat.com/uhf/ubi9/appstream",)}
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.read_string(
+            "[hummingbird]\nname=hb\nenabled=1\n"
+            "baseurl=https://packages.redhat.com/UHF/ubi9/appstream\n"
+        )
+        errors = verifier.check_repo_sections(
+            parser, "hummingbird.repo", {"hummingbird"}, expected_baseurls=pins,
+        )
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("unpinned baseurl", errors[0])
+
+    def test_every_origin_in_a_multi_url_baseurl_must_be_pinned(self):
+        """baseurl is a list option, so DNF fetches from every URL in it.
+
+        Comparing the raw value as one literal string called a legitimate
+        two-URL baseurl "not the pinned origin" and said nothing about why.
+        Both pinned origins together pass; adding a third, unpinned one is
+        the failure, and the message names that URL rather than the whole value.
+        """
+        pins = {
+            "hummingbird": (
+                "https://packages.redhat.com/uhf/ubi9/appstream",
+                "https://packages.redhat.com/uhf/ubi9/anolis",
+            ),
+        }
+
+        def errors_for(baseurl: str) -> list[str]:
+            parser = configparser.ConfigParser(interpolation=None)
+            parser.read_string(
+                f"[hummingbird]\nname=hb\nenabled=1\nbaseurl={baseurl}\n"
+            )
+            return verifier.check_repo_sections(
+                parser, "hummingbird.repo", {"hummingbird"},
+                expected_baseurls=pins,
+            )
+
+        both_pinned = errors_for(
+            "https://packages.redhat.com/uhf/ubi9/appstream "
+            "https://packages.redhat.com/uhf/ubi9/anolis"
+        )
+        self.assertEqual(both_pinned, [])
+
+        # Comma-separated is the same list to DNF.
+        self.assertEqual(
+            errors_for(
+                "https://packages.redhat.com/uhf/ubi9/appstream,"
+                "https://packages.redhat.com/uhf/ubi9/anolis"
+            ),
+            [],
+        )
+
+        mixed = errors_for(
+            "https://packages.redhat.com/uhf/ubi9/appstream "
+            "https://evil.example.invalid/mirror"
+        )
+        self.assertEqual(len(mixed), 1, mixed)
+        self.assertIn(
+            "unpinned baseurl 'https://evil.example.invalid/mirror'", mixed[0]
+        )
+
+    def test_the_braced_and_bare_spellings_of_a_variable_are_the_same_origin(self):
+        """DNF accepts ${basearch} and $basearch alike, so a pin must too.
+
+        The shipped nvidia pin carries the bare spelling; a repository file
+        written with braces is the same origin, not a different one.
+        """
+        pins = {
+            "nvidia-container-toolkit": (
+                "https://nvidia.github.io/libnvidia-container/stable/rpm/$basearch",
+            ),
+        }
+        for spelling in ("$basearch", "${basearch}"):
+            with self.subTest(spelling=spelling):
+                parser = configparser.ConfigParser(interpolation=None)
+                parser.read_string(
+                    "[nvidia-container-toolkit]\nname=nvidia\nenabled=1\n"
+                    f"baseurl=https://nvidia.github.io/libnvidia-container/"
+                    f"stable/rpm/{spelling}\n"
+                )
+                self.assertEqual(
+                    verifier.check_repo_sections(
+                        parser, "nvidia-container.repo",
+                        {"nvidia-container-toolkit"}, expected_baseurls=pins,
+                    ),
+                    [],
+                )
+
+    def test_an_allowlisted_repository_with_no_baseurl_fails(self):
+        errors = self.policy_errors("[utah-packages]\nname=utah\nenabled=1\n")
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("declares no baseurl", errors[0])
+
+    def test_a_metalink_is_not_a_pin(self):
+        errors = self.policy_errors(
+            "[utah-packages]\nname=utah\nenabled=1\n"
+            "metalink=https://evil.example.invalid/x.xml\n"
+        )
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("resolves via metalink", errors[0])
+
+    def test_a_mirrorlist_is_not_a_pin(self):
+        errors = self.policy_errors(
+            "[utah-packages]\nname=utah\nenabled=1\n"
+            "mirrorlist=https://evil.example.invalid/x\n"
+        )
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("resolves via mirrorlist", errors[0])
+
+    def test_a_metalink_beside_the_pinned_baseurl_still_fails(self):
+        """DNF merges metalink mirrors with the baseurl instead of preferring it.
+
+        A section that carries the approved baseurl and a metalink is not a
+        pinned repository: librepo fetches from the union, so the package can
+        still come from the unpinned origin while the baseurl comparison passes.
+        """
+        errors = self.policy_errors(
+            "[utah-packages]\nname=utah\nenabled=1\n"
+            "baseurl=file:///etc/utah-packages\n"
+            "metalink=https://evil.example.invalid/x.xml\n"
+        )
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("resolves via metalink", errors[0])
+
+    def test_a_mirrorlist_beside_the_pinned_baseurl_still_fails(self):
+        errors = self.policy_errors(
+            "[utah-packages]\nname=utah\nenabled=1\n"
+            "baseurl=file:///etc/utah-packages\n"
+            "mirrorlist=https://evil.example.invalid/x\n"
+        )
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("resolves via mirrorlist", errors[0])
+
+    def test_an_id_with_no_pin_at_all_fails_closed(self):
+        """Manifest silence is not approval: the pin is what makes the id safe."""
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.read_string("[utah-packages]\nname=utah\nenabled=1\nbaseurl=file:///etc/utah-packages\n")
+        errors = verifier.check_repo_sections(
+            parser, "utah-packages.repo", {"utah-packages"}, expected_baseurls={}
+        )
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("no pinned baseurl", errors[0])
+
+    def test_a_disabled_repository_is_not_pinned_or_checked(self):
+        self.assertEqual(
+            self.policy_errors(
+                "[utah-packages]\nname=utah\nenabled=0\nbaseurl=https://evil.example.invalid/x\n"
+            ),
+            [],
+        )
+
+    def test_pins_apply_to_repositories_declared_in_dnf_conf(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "etc/dnf").mkdir(parents=True)
+            (root / "etc/dnf/dnf.conf").write_text(
+                "[main]\ngpgcheck=1\n\n[utah-packages]\nname=utah\nenabled=1\n"
+                "baseurl=https://evil.example.invalid/x\n"
+            )
+            errors = verifier.verify_runtime_repository_policy(
+                {"utah-packages"}, root=root, expected_baseurls=self.PINS
+            )
+            self.assertEqual(len(errors), 1, errors)
+            self.assertIn("unpinned baseurl", errors[0])
+
+    def test_a_repo_file_under_any_reposdir_is_pinned(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "etc/yum.repos.d").mkdir(parents=True)
+            (root / "etc/yum.repos.d/utah-packages.repo").write_text(
+                "[utah-packages]\nname=utah\nenabled=1\nbaseurl=https://evil.example.invalid/x\n"
+            )
+            errors = verifier.verify_runtime_repository_policy(
+                {"utah-packages"}, root=root, expected_baseurls=self.PINS
+            )
+            self.assertEqual(len(errors), 1, errors)
+            self.assertIn("unpinned baseurl", errors[0])
+
+    def test_the_manifest_pins_match_the_repo_files_they_describe(self):
+        """A pin that drifts from packages/*.repo is a build failure, caught here."""
+        manifest = ROOT / "packages" / "utah.toml"
+        declared_tables = tomllib.loads(manifest.read_text())["repositories"]
+        pins = {
+            repo_id: {verifier.normalize_baseurl(url) for url in urls}
+            for repo_id, urls in declared_tables["baseurls"].items()
+        }
+        self.assertEqual(
+            sorted(pins), sorted(declared_tables["allowed"]),
+            "every allowlisted id needs a pinned origin, and nothing else does",
+        )
+        for repo_file in (ROOT / "packages").glob("*.repo"):
+            parser = configparser.ConfigParser(interpolation=None)
+            parser.read_string(repo_file.read_text())
+            for repo_id in parser.sections():
+                if repo_id not in pins:
+                    continue
+                baseurl = verifier.normalize_baseurl(
+                    parser.get(repo_id, "baseurl", fallback="")
+                )
+                self.assertIn(
+                    baseurl, pins[repo_id],
+                    f"{repo_file.name}:{repo_id} declares '{baseurl}', "
+                    f"which [repositories.baseurls] does not pin",
+                )
 
 
 class PackageAttestationTests(unittest.TestCase):
@@ -303,14 +583,14 @@ class PackageAttestationTests(unittest.TestCase):
             (repos_dir / "utah-packages.repo").write_text(
                 "[utah-packages]\nname=utah\nenabled=True\n"
             )
-            errors = verifier.verify_repository_policy(repos_dir, allowed)
+            errors = verifier.verify_repository_policy(repos_dir, allowed, expected_baseurls=None)
             self.assertEqual(errors, [])
 
             # Adding an unapproved repo with enabled=true/yes must fail
             (repos_dir / "custom.repo").write_text(
                 "[unapproved-repo]\nname=bad\nenabled=yes\nbaseurl=https://example.com/%20/repo\n"
             )
-            errors = verifier.verify_repository_policy(repos_dir, allowed)
+            errors = verifier.verify_repository_policy(repos_dir, allowed, expected_baseurls=None)
             self.assertEqual(len(errors), 1)
             self.assertIn("Unapproved repository 'unapproved-repo'", errors[0])
 
@@ -318,7 +598,7 @@ class PackageAttestationTests(unittest.TestCase):
             (repos_dir / "fedora.repo").write_text(
                 "[fedora]\nname=Fedora Linux\nbaseurl=https://dl.fedoraproject.org/pub/fedora\nenabled=1\n"
             )
-            errors = verifier.verify_repository_policy(repos_dir, allowed)
+            errors = verifier.verify_repository_policy(repos_dir, allowed, expected_baseurls=None)
             self.assertTrue(any("Fedora repository 'fedora' is enabled" in e for e in errors))
 
     def test_runtime_policy_covers_dnf_conf_sections(self):
@@ -334,14 +614,18 @@ class PackageAttestationTests(unittest.TestCase):
             (root / "etc/dnf/dnf.conf").write_text(
                 "[main]\ngpgcheck=1\n\n[sneaky]\nname=sneaky\nenabled=1\n"
             )
-            errors = verifier.verify_runtime_repository_policy(allowed, root=root)
+            errors = verifier.verify_runtime_repository_policy(
+                allowed, root=root, expected_baseurls=None
+            )
             self.assertEqual(len(errors), 1)
             self.assertIn("Unapproved repository 'sneaky'", errors[0])
             self.assertIn("dnf.conf", errors[0])
 
             # [main] is DNF's own configuration, never a repository
             (root / "etc/dnf/dnf.conf").write_text("[main]\ngpgcheck=1\n")
-            self.assertEqual(verifier.verify_runtime_repository_policy(allowed, root=root), [])
+            self.assertEqual(verifier.verify_runtime_repository_policy(
+                allowed, root=root, expected_baseurls=None
+            ), [])
 
     def test_runtime_policy_follows_reposdir(self):
         """An alternate reposdir must be scanned; /etc/yum.repos.d alone is not the system."""
@@ -357,7 +641,9 @@ class PackageAttestationTests(unittest.TestCase):
             (root / "etc/dnf/dnf.conf").write_text(
                 "[main]\nreposdir=/etc/yum.repos.d,/opt/repos\n"
             )
-            errors = verifier.verify_runtime_repository_policy(allowed, root=root)
+            errors = verifier.verify_runtime_repository_policy(
+                allowed, root=root, expected_baseurls=None
+            )
             self.assertEqual(len(errors), 1)
             self.assertIn("Unapproved repository 'unapproved-elsewhere'", errors[0])
 
@@ -369,7 +655,9 @@ class PackageAttestationTests(unittest.TestCase):
             (root / "etc/yum.repos.d/fedora.repo").write_text(
                 "[fedora]\nname=Fedora\nenabled=1\n"
             )
-            errors = verifier.verify_runtime_repository_policy(allowed, root=root)
+            errors = verifier.verify_runtime_repository_policy(
+                allowed, root=root, expected_baseurls=None
+            )
             self.assertTrue(any("Fedora repository 'fedora' is enabled" in e for e in errors))
 
     def test_enabled_spelling_cannot_bypass_the_allowlist(self):
@@ -381,7 +669,7 @@ class PackageAttestationTests(unittest.TestCase):
                 (repos_dir / "custom.repo").write_text(
                     f"[unapproved-repo]\nname=bad\nenabled={spelling}\n"
                 )
-                errors = verifier.verify_repository_policy(repos_dir, allowed)
+                errors = verifier.verify_repository_policy(repos_dir, allowed, expected_baseurls=None)
                 self.assertEqual(len(errors), 1, errors)
                 self.assertIn("Unapproved repository 'unapproved-repo'", errors[0])
 
@@ -393,7 +681,7 @@ class PackageAttestationTests(unittest.TestCase):
                 (repos_dir / "custom.repo").write_text(
                     f"[unapproved-repo]\nname=bad\nenabled={spelling}\n"
                 )
-                self.assertEqual(verifier.verify_repository_policy(repos_dir, allowed), [])
+                self.assertEqual(verifier.verify_repository_policy(repos_dir, allowed, expected_baseurls=None), [])
 
     def test_relative_reposdir_resolves_against_the_policy_root(self):
         """A relative reposdir= must scan the attested root, not the process CWD."""
@@ -406,7 +694,9 @@ class PackageAttestationTests(unittest.TestCase):
                 "[unapproved-elsewhere]\nname=bad\nenabled=1\n"
             )
             (root / "etc/dnf/dnf.conf").write_text("[main]\nreposdir=opt/repos\n")
-            errors = verifier.verify_runtime_repository_policy(allowed, root=root)
+            errors = verifier.verify_runtime_repository_policy(
+                allowed, root=root, expected_baseurls=None
+            )
             self.assertEqual(len(errors), 1, errors)
             self.assertIn("Unapproved repository 'unapproved-elsewhere'", errors[0])
 
@@ -432,7 +722,9 @@ class PackageAttestationTests(unittest.TestCase):
                 (root / directory / "sneaky.repo").write_text(
                     "[unapproved-elsewhere]\nname=bad\nenabled=1\n"
                 )
-                errors = verifier.verify_runtime_repository_policy(allowed, root=root)
+                errors = verifier.verify_runtime_repository_policy(
+                allowed, root=root, expected_baseurls=None
+            )
                 self.assertEqual(len(errors), 1, errors)
                 self.assertIn("Unapproved repository 'unapproved-elsewhere'", errors[0])
 
@@ -454,7 +746,9 @@ class PackageAttestationTests(unittest.TestCase):
             )
             (root / "etc/dnf/dnf.conf").write_text("[main]\nreposdir=/etc/yum.repos.d\n")
             self.assertEqual(
-                verifier.verify_runtime_repository_policy(allowed, root=root), []
+                verifier.verify_runtime_repository_policy(
+                allowed, root=root, expected_baseurls=None
+            ), []
             )
 
     def test_generate_provenance_report(self):

@@ -90,6 +90,28 @@ allowed = [
     "nvidia-container-toolkit",
 ]
 
+# The origin each allowlisted id may serve. An id alone names a label the
+# repository file carries about itself: a [utah-packages] section with a
+# different baseurl is still "utah-packages" to every check that reads the name,
+# so the allowlist on its own certifies a name rather than a source. Every entry
+# in `allowed` needs a pinned origin here or the verifier fails closed.
+#
+# These must match the baseurl in the corresponding packages/*.repo file exactly,
+# apart from a trailing slash and the case of the scheme and host. Change a
+# repository's URL and this is the second half of that change.
+#
+# utah-packages serves the pinned package image bind-mounted at
+# /etc/utah-packages by the Containerfile, so its origin is that bind mount, not
+# a network host.
+[repositories.baseurls]
+public-hummingbird-x86_64-rpms = [
+    "https://packages.redhat.com/api/pulp-content/public-hummingbird/x86_64/",
+]
+utah-packages = ["file:///etc/utah-packages"]
+nvidia-container-toolkit = [
+    "https://nvidia.github.io/libnvidia-container/stable/rpm/$basearch",
+]
+
 [factory]
 # Packages expected to resolve from the utah-packages factory rebuild with .bfin
 # release identity. This is a hard build gate, so a name belongs here only if

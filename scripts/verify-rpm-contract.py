@@ -282,13 +282,140 @@ def repo_security_option_errors(
     return errors
 
 
+def normalize_baseurl(url: str) -> str:
+    """Put a baseurl into the one form two spellings of the same URL share.
+
+    A trailing slash and the case of the scheme and host are not a different
+    origin -- "HTTPS://Packages.RedHat.COM/api/x" and
+    "https://packages.redhat.com/api/x/" are the same repository, and failing
+    on that spelling would train people to stop reading the error. The two
+    spellings of a variable reference are not a different origin either, so
+    "${basearch}" and "$basearch" compare equal. The path is compared
+    case-sensitively because it is not, on a case-sensitive server.
+    """
+    value = url.strip().rstrip("/")
+    if not value:
+        return ""
+    value = re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", r"$\1", value)
+    scheme, sep, rest = value.partition("://")
+    if not sep:
+        return value.lower()
+    host, slash, path = rest.partition("/")
+    return f"{scheme.lower()}://{host.lower()}{slash}{path}"
+
+
+def split_baseurls(raw: str) -> list[str]:
+    """Split a baseurl option into the origins DNF would fetch from.
+
+    DNF's baseurl is a list option: it accepts several URLs separated by
+    whitespace, commas or newlines, and fetches from every one of them. A pin
+    compared against the raw value as a single literal string would therefore
+    call a legitimate two-URL baseurl "not the pinned origin" and say nothing
+    about the reason. Splitting it first lets the caller require each origin to
+    be pinned on its own, which is the property that matters: no unpinned
+    mirror is reachable through an allowlisted id.
+    """
+    return [entry for entry in re.split(r"[\s,]+", raw.strip()) if entry]
+
+
+def repo_pin_errors(
+    section_name: str,
+    parser: configparser.ConfigParser,
+    source: str,
+    expected_baseurls: dict[str, tuple[str, ...]],
+) -> list[str]:
+    """Check that an allowlisted repository serves the URL it is pinned to.
+
+    The allowlist is by id, and an id is a label the repository file itself
+    carries: a [utah-packages] section pointing somewhere else entirely is still
+    "utah-packages" to every check that reads only the name, so an id-only
+    allowlist certifies a name rather than a source. Pinning the baseurl as well
+    is what makes the guarantee about where packages come from -- the property
+    this whole policy exists to state.
+
+    Three ways to be unpinned are failures rather than passes:
+      - no baseurl at all, so the repository resolves from wherever the consumer
+        decides, or from a metalink/mirrorlist that can move between requests;
+      - a metalink/mirrorlist, which is the same hole with an extra indirection.
+        DNF and librepo merge metalink/mirrorlist mirrors with any baseurl the
+        section also declares rather than letting the baseurl override them, so
+        a section that carries both still fetches from an unpinned origin; the
+        indirection is rejected whether or not the pinned baseurl is present;
+      - a baseurl the manifest does not name for that id, or any single origin
+        in a multi-URL baseurl it does not name -- baseurl is a list option, so
+        every URL in it has to be pinned, not the string as a whole.
+    An allowlisted id with no entry in the map is also a failure: it is the case
+    where the pin was never written, and failing closed is what stops the
+    manifest's silence from reading as approval.
+    """
+    errors: list[str] = []
+    declared = expected_baseurls.get(section_name)
+    if not declared:
+        errors.append(
+            f"Allowlisted repository '{section_name}' is enabled in {source} but has "
+            "no pinned baseurl in [repositories.baseurls]; an id on the allowlist is "
+            "not approval of an unknown origin"
+        )
+        return errors
+
+    baseurl = parser.get(section_name, "baseurl", fallback="").strip()
+    indirection = next(
+        (
+            key
+            for key in ("metalink", "mirrorlist")
+            if parser.get(section_name, key, fallback="").strip()
+        ),
+        "",
+    )
+    if indirection:
+        errors.append(
+            f"Allowlisted repository '{section_name}' is enabled in {source} and "
+            f"resolves via {indirection}; DNF merges those mirrors with any "
+            "baseurl the section declares, so only a pinned baseurl is approved "
+            f"(expected one of: {', '.join(sorted(declared))})"
+        )
+        return errors
+
+    if not baseurl:
+        errors.append(
+            f"Allowlisted repository '{section_name}' is enabled in {source} and "
+            "declares no baseurl; only a pinned baseurl is approved (expected one "
+            f"of: {', '.join(sorted(declared))})"
+        )
+        return errors
+
+    pinned = {normalize_baseurl(url) for url in declared}
+    unpinned = [
+        url for url in split_baseurls(baseurl) if normalize_baseurl(url) not in pinned
+    ]
+    if unpinned:
+        listed = ", ".join(f"'{url}'" for url in unpinned)
+        errors.append(
+            f"Repository '{section_name}' is enabled in {source} with unpinned "
+            f"baseurl {listed}; expected one of: "
+            f"{', '.join(sorted(declared))}"
+        )
+    return errors
+
+
 def check_repo_sections(
     parser: configparser.ConfigParser,
     source: str,
     allowed_repos: set[str],
+    *,
     skip_sections: frozenset[str] = frozenset(),
+    expected_baseurls: dict[str, tuple[str, ...]] | None,
 ) -> list[str]:
-    """Apply the allowlist to every repository section of an already-parsed config."""
+    """Apply the allowlist to every repository section of an already-parsed config.
+
+    expected_baseurls maps an allowlisted id to the baseurls it may serve. It has
+    no default on purpose: leaving it out would silently degrade this check to
+    the id-only policy that verifies a repository *name* rather than a source,
+    and a caller that never learns it asked for the weaker check is the failure
+    mode worth spending a TypeError on. Pass the manifest's
+    [repositories.baseurls] map to enforce pinned origins, or None to say
+    deliberately that only the id-level policy is wanted.
+    """
     errors: list[str] = []
     for section_name in parser.sections():
         if section_name in skip_sections:
@@ -314,6 +441,10 @@ def check_repo_sections(
                     f"Unapproved repository '{section_name}' is enabled in {source}; "
                     f"allowed repositories: {sorted(allowed_repos)}"
                 )
+            elif expected_baseurls is not None:
+                errors.extend(
+                    repo_pin_errors(section_name, parser, source, expected_baseurls)
+                )
     return errors
 
 
@@ -321,6 +452,8 @@ def verify_repository_policy(
     repos_dir: Path,
     allowed_repos: set[str],
     check_mode: bool = False,
+    *,
+    expected_baseurls: dict[str, tuple[str, ...]] | None,
 ) -> list[str]:
     """Prove the system exposes only explicitly allowed runtime RPM repositories."""
     errors: list[str] = []
@@ -345,7 +478,12 @@ def verify_repository_policy(
             errors.append(f"Could not parse repo file {repo_file}: {e}")
             continue
 
-        errors.extend(check_repo_sections(parser, repo_file.name, allowed_repos))
+        errors.extend(
+            check_repo_sections(
+                parser, repo_file.name, allowed_repos,
+                expected_baseurls=expected_baseurls,
+            )
+        )
     return errors
 
 
@@ -392,6 +530,8 @@ def resolve_reposdirs(
 def verify_runtime_repository_policy(
     allowed_repos: set[str],
     root: Path = Path("/"),
+    *,
+    expected_baseurls: dict[str, tuple[str, ...]] | None,
 ) -> list[str]:
     """Prove the whole runtime DNF configuration exposes only allowed repositories.
 
@@ -417,7 +557,9 @@ def verify_runtime_repository_policy(
         # [main] is DNF's own configuration, not a repository.
         errors.extend(
             check_repo_sections(
-                parser, str(conf_path), allowed_repos, skip_sections=frozenset({"main"})
+                parser, str(conf_path), allowed_repos,
+                skip_sections=frozenset({"main"}),
+                expected_baseurls=expected_baseurls,
             )
         )
         for repos_dir in resolve_reposdirs(parser, default_dirs, root):
@@ -428,7 +570,11 @@ def verify_runtime_repository_policy(
         searched.extend(default_dirs)
 
     for repos_dir in searched:
-        errors.extend(verify_repository_policy(repos_dir, allowed_repos))
+        errors.extend(
+            verify_repository_policy(
+                repos_dir, allowed_repos, expected_baseurls=expected_baseurls
+            )
+        )
     return errors
 
 
@@ -590,6 +736,51 @@ def main() -> int:
         )
         return 1
 
+    # An id on the allowlist says which repository Utah expects to be enabled.
+    # It says nothing about where that repository fetches from, because the id is
+    # a label inside the same file that carries the baseurl -- so without the
+    # pinned origins below, [utah-packages] could serve anything and the policy
+    # would still pass. Every allowlisted id must therefore name its origin.
+    try:
+        declared_baseurls = overlay_data["repositories"]["baseurls"]
+    except (KeyError, AttributeError):
+        print(
+            f"ERROR: Overlay manifest '{overlay}' is missing [repositories.baseurls] section",
+            file=sys.stderr,
+        )
+        return 1
+
+    # A pin is a list of origins. A bare string would iterate per character and
+    # pin the id to "h", "t", "t", "p"... -- every comparison would then fail on
+    # an error message listing single letters, so the manifest mistake is named
+    # here instead of being reported as a baseurl mismatch.
+    mistyped = sorted(
+        repo_id
+        for repo_id, urls in declared_baseurls.items()
+        if not isinstance(urls, list)
+        or not all(isinstance(url, str) for url in urls)
+    )
+    if mistyped:
+        print(
+            f"ERROR: Overlay manifest '{overlay}' has [repositories.baseurls] entries "
+            f"that are not a list of URL strings: {', '.join(mistyped)}",
+            file=sys.stderr,
+        )
+        return 1
+
+    repo_baseurls = {
+        repo_id: tuple(urls) for repo_id, urls in declared_baseurls.items()
+    }
+
+    unpinned = sorted(allowed_repos - repo_baseurls.keys())
+    if unpinned:
+        print(
+            f"ERROR: Overlay manifest '{overlay}' allows repositories with no pinned "
+            f"baseurl in [repositories.baseurls]: {', '.join(unpinned)}",
+            file=sys.stderr,
+        )
+        return 1
+
     try:
         factory_packages = list(overlay_data["factory"]["packages"])
     except KeyError:
@@ -629,7 +820,10 @@ def main() -> int:
         for pkg in factory_packages:
             assert pkg in expected, f"Factory package '{pkg}' not in expected contract packages"
         # Validate repository policy in packages/
-        repo_errors = verify_repository_policy(args.manifest.parent, allowed_repos, check_mode=True)
+        repo_errors = verify_repository_policy(
+            args.manifest.parent, allowed_repos, check_mode=True,
+            expected_baseurls=repo_baseurls,
+        )
         if repo_errors:
             for err in repo_errors:
                 print(f"ERROR: {err}", file=sys.stderr)
@@ -684,7 +878,11 @@ def main() -> int:
     #    how the tests attest a known filesystem instead of whatever DNF
     #    configuration the machine running them happens to have.
     policy_root = Path(os.environ.get("UTAH_POLICY_ROOT", "/"))
-    attestation_errors.extend(verify_runtime_repository_policy(allowed_repos, policy_root))
+    attestation_errors.extend(
+        verify_runtime_repository_policy(
+            allowed_repos, policy_root, expected_baseurls=repo_baseurls
+        )
+    )
 
     if attestation_errors:
         print(

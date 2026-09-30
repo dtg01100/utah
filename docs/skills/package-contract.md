@@ -49,6 +49,10 @@ policy for changing them and asserting supply-chain integrity.
   - `[services]` — desktop services Bluefin adds on top of the server base.
   - `[factory]` — packages expected from the factory rebuild with `.bfin` release identity.
   - `[repositories]` — explicitly allowed runtime RPM repositories.
+  - `[repositories.baseurls]` — the origin each allowlisted id is permitted to
+    serve. An id names a label the repository file carries about itself, so the
+    pin is what makes the allowlist a statement about where packages come from;
+    adding an id to `allowed` without a pin here fails `--check`.
   - `[unavailable]` — Bluefin contract packages none of Utah's repositories
     provide.
 
@@ -113,6 +117,23 @@ verification to fail immediately. `UTAH_POLICY_ROOT` re-roots the scan, which is
 how the unit tests attest a known filesystem rather than the DNF configuration
 of whatever machine runs them.
 
+The allowlist is by id, and an id is a label inside the same file that carries
+the `baseurl` — so an id-only allowlist would certify a name, not a source, and a
+`[utah-packages]` section pointing elsewhere would read as approved. Each allowed
+id therefore also has an entry in `[repositories.baseurls]` in
+`packages/utah.toml`, and the verifier requires the enabled section's `baseurl`
+to match it. A repository that declares no `baseurl` is a failure rather than a
+pass, and so is one that declares a `metalink` or `mirrorlist` — even alongside
+the pinned `baseurl`, because DNF merges those mirrors with the `baseurl`
+instead of preferring it — and so is an allowlisted id with no pin at all:
+manifest silence is not approval. Comparison
+ignores a trailing slash and the case of the scheme and host, because those are
+not a different origin; it also treats `${basearch}` and `$basearch` as the same
+variable, and because `baseurl` is a list option it requires *every* URL in a
+multi-URL value to be pinned, not the value as one string. Changing a
+repository's URL means changing the pin in
+the same commit — a unit test asserts the two agree.
+
 The allowlist and origin checks answer *where* DNF may fetch from, not *how* it
 gets there. Two per-repository options reroute or weaken that fetch and are
 therefore failures on their own: `proxy=`, which sends every request through a
@@ -123,6 +144,13 @@ reaches an unpinned intermediary, so `check_repo_sections` rejects both for
 every enabled allowlisted section. A disabled section is never fetched and is
 not inspected; an unapproved or Fedora section already fails the allowlist. An
 absent `sslverify` keeps DNF's verifying default and passes.
+
+The three entry points that apply this policy — `check_repo_sections`,
+`verify_repository_policy` and `verify_runtime_repository_policy` — take the pin
+map as a required keyword-only argument with no default: omit it and Python
+raises `TypeError` rather than letting the call quietly fall back to the id-only
+allowlist. Pass the manifest's `[repositories.baseurls]` mapping, or pass `None`
+when the caller genuinely wants the name-level policy alone.
 
 The pinned package image is an RPM repository, not a runtime dependency: its
 contents are copied into the image so the package transaction is reproducible
