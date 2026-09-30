@@ -46,10 +46,15 @@ The TOML's sections are the contract's table of contents:
   flavor pattern `(main|nvidia|gaming|nvidia-gaming)` and the matching
   `ostree-image-signed` ref pattern.
 - **`[configuration]`** — the dconf distro databases and locks under
-  `/etc/dconf/db/distro.d/` must exist, and `file_contains` pins their
-  content: the gschema override references Bazaar and the Bluefin background
-  path, the custom command menu points at `docs.projectbluefin.io`, the
-  keybindings set `xdg-terminal-exec`.
+  `/etc/dconf/db/distro.d/` must exist, plus the GDM keyfile under
+  `/etc/dconf/db/gdm.d/01-bluefin-gdm-logo` that overrides
+  `org.gnome.login-screen.logo` to point at the Bluefin mark; otherwise
+  gnome-shell falls back to `fedora-logos`' Fedora wordmark at the greeter
+  (#378). `file_contains` pins the live configuration: the gschema override
+  references Bazaar and the Bluefin background path, the custom command menu
+  points at `docs.projectbluefin.io`, the keybindings set
+  `xdg-terminal-exec`, the GDM keyfile declares the login-screen schema and
+  the Bluefin asset path.
 - **`[flatpak]`** — first-boot policy: the Flathub remote
   (`https://dl.flathub.org/repo/`), the Bazaar preinstall, the
   `99-flatpaks.sh` privileged-setup hook, and the system-flatpaks Brewfile
@@ -94,6 +99,33 @@ system and glib-compile-schemas. Additionally, `scripts/build-gnome-extensions.s
 guards `src/shell/clipboard.js` against GNOME 48+ final GTypes: wrapping
 `GSConnectShellClipboard` registration in a try/catch prevents module load failures
 on `GjsPrivate.DBusImplementation`, gracefully degrading to an inert portal on GNOME 51.
+
+## The GDM greeter logo is Bluefin, not Fedora (#378)
+
+Without an `org.gnome.login-screen.logo` override, GDM shows the schema
+default — `/usr/share/pixmaps/fedora-gdm-logo.png`, shipped by
+`fedora-logos`. The greeter on every installed Utah therefore opened with
+the Fedora wordmark.
+
+GDM uses its own dconf profile (`/etc/dconf/profile/gdm`, provided by the
+gdm RPM). Utah ships a single keyfile,
+`system_files/shared/etc/dconf/db/gdm.d/01-bluefin-gdm-logo`, that sets
+`logo` to the same `bluefin.png` the desktop contract already asserts
+under `/usr/share/ublue-os/bluefin-logos/`. That avoids a duplicate asset
+in the overlay and means a brand refresh in `common` flows to both the
+desktop shell and the greeter without a second commit here.
+
+`scripts/configure-branding.sh` runs `dconf update` after stamping the
+contract files. The greeter database is compiled at build time, so a
+missing image or a malformed keyfile fails the build rather than the
+post-install E2E that originally caught the regression. The compile is
+guarded on `/usr/bin/dconf` so it is a no-op on a host without the
+gnome-desktop stack (CI without `dnf install` of it).
+
+`[configuration].files` asserts the keyfile's path on disk;
+`[configuration].file_contains` pins both the schema header and the
+asset path so a stray edit that points `logo` somewhere else fails the
+build.
 
 ## Services and login defaults
 

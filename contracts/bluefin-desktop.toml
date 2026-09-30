@@ -54,6 +54,11 @@ files = [
   "/etc/dconf/db/distro.d/03-bluefin-ptyxis-palette",
   "/etc/dconf/db/distro.d/04-bluefin-custom-command-menu",
   "/etc/dconf/db/distro.d/locks/01-bluefin-locked-settings",
+  # GDM greeter logo. GDM uses its own "gdm" dconf profile (provided by the
+  # gdm RPM at /etc/dconf/profile/gdm); without this keyfile gnome-shell
+  # falls back to /usr/share/pixmaps/fedora-gdm-logo.png from fedora-logos,
+  # and the login screen shows the Fedora wordmark instead of Bluefin (#378).
+  "/etc/dconf/db/gdm.d/01-bluefin-gdm-logo",
 ]
 
 [configuration.file_contains]
@@ -67,6 +72,13 @@ files = [
 ]
 "/etc/dconf/db/distro.d/02-bluefin-keybindings" = [
   "xdg-terminal-exec",
+]
+# The login screen logo must point at the Bluefin mark. Asserting both the
+# schema and the asset path guards against either reverting to the Fedora
+# fallback or pointing at an image that isn't shipped. See #378.
+"/etc/dconf/db/gdm.d/01-bluefin-gdm-logo" = [
+  "[org/gnome/login-screen]",
+  "logo='/usr/share/ublue-os/bluefin-logos/bluefin.png'",
 ]
 
 [flatpak]

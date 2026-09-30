@@ -1,0 +1,20 @@
+# GDM reads the greeter logo from a separate dconf profile ("gdm"). Without
+# this keyfile, gnome-shell falls back to the schema default
+# (/usr/share/pixmaps/fedora-gdm-logo.png), which fedora-logos provides and
+# which is the Fedora wordmark. Utah overlays the Bluefin mark instead.
+#
+# The image is the same bluefin-logos/bluefin.png the desktop contract asserts
+# under /usr/share/ublue-os/bluefin-logos/ -- the file Common ships. Using the
+# existing asset avoids duplicating a ~285 KB PNG in two places, and a single
+# source means a brand refresh in Common flows to both the desktop shell and
+# the greeter without a second commit here.
+#
+# The GDM dconf profile is provided by the gdm RPM itself
+# (system-db:gdm,file-db:/usr/share/gdm/greeter-dconf-defaults); Utah only
+# needs to drop a keyfile in /etc/dconf/db/gdm.d/ and let dconf-update.service
+# recompile the database on first boot. The build also runs `dconf update` at
+# branding time so a contract failure surfaces immediately rather than at first
+# boot, which is what issue #378 caught.
+
+[org/gnome/login-screen]
+logo='/usr/share/ublue-os/bluefin-logos/bluefin.png'
