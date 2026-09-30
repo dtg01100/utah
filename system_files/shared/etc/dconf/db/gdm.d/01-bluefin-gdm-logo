@@ -7,14 +7,17 @@
 # under /usr/share/ublue-os/bluefin-logos/ -- the file Common ships. Using the
 # existing asset avoids duplicating a ~285 KB PNG in two places, and a single
 # source means a brand refresh in Common flows to both the desktop shell and
-# the greeter without a second commit here.
+# the greeter without a second commit here. That the PNG exists is enforced by
+# the [branding].files entry in contracts/bluefin-desktop.toml, not by dconf:
+# the value below is an opaque string to dconf and a dangling path compiles
+# without complaint.
 #
 # The GDM dconf profile is provided by the gdm RPM itself
 # (system-db:gdm,file-db:/usr/share/gdm/greeter-dconf-defaults); Utah only
 # needs to drop a keyfile in /etc/dconf/db/gdm.d/ and let dconf-update.service
 # recompile the database on first boot. The build also runs `dconf update` at
-# branding time so a contract failure surfaces immediately rather than at first
-# boot, which is what issue #378 caught.
+# branding time so a malformed keyfile surfaces immediately rather than at
+# first boot, which is what issue #378 caught.
 
 [org/gnome/login-screen]
 logo='/usr/share/ublue-os/bluefin-logos/bluefin.png'

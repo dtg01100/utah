@@ -74,8 +74,9 @@ files = [
   "xdg-terminal-exec",
 ]
 # The login screen logo must point at the Bluefin mark. Asserting both the
-# schema and the asset path guards against either reverting to the Fedora
-# fallback or pointing at an image that isn't shipped. See #378.
+# schema and the asset path guards against reverting to the Fedora fallback
+# or pointing somewhere other than the bluefin.png that [branding].files
+# already asserts is shipped. See #378.
 "/etc/dconf/db/gdm.d/01-bluefin-gdm-logo" = [
   "[org/gnome/login-screen]",
   "logo='/usr/share/ublue-os/bluefin-logos/bluefin.png'",

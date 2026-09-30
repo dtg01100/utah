@@ -116,11 +116,18 @@ in the overlay and means a brand refresh in `common` flows to both the
 desktop shell and the greeter without a second commit here.
 
 `scripts/configure-branding.sh` runs `dconf update` after stamping the
-contract files. The greeter database is compiled at build time, so a
-missing image or a malformed keyfile fails the build rather than the
-post-install E2E that originally caught the regression. The compile is
-guarded on `/usr/bin/dconf` so it is a no-op on a host without the
-gnome-desktop stack (CI without `dnf install` of it).
+contract files, so the greeter database is compiled at build time and a
+malformed keyfile fails the build rather than the post-install E2E that
+originally caught the regression. The compile is guarded on `/usr/bin/dconf`
+so it is a no-op on a host without the gnome-desktop stack (CI without
+`dnf install` of it).
+
+`dconf update` does **not** validate the logo path — it compiles keyfiles
+and stores `logo` as an opaque string, so a dangling path compiles
+cleanly. The image itself is guarded by the pre-existing `[branding].files`
+entry for `/usr/share/ublue-os/bluefin-logos/bluefin.png` in
+`contracts/bluefin-desktop.toml`, enforced by
+`utah-verify-desktop-contract` in the same `RUN` layer.
 
 `[configuration].files` asserts the keyfile's path on disk;
 `[configuration].file_contains` pins both the schema header and the

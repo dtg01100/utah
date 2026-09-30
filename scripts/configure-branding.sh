@@ -84,10 +84,15 @@ printf '…\n' >/usr/share/ublue-os/bazaar-install-count
 # Compile the system dconf databases now so the GDM greeter picks up the
 # org.gnome.login-screen logo override (etc/dconf/db/gdm.d/01-bluefin-gdm-logo)
 # on first boot. dconf-update.service does this in the installed system; doing
-# it here too means a missing image or a malformed keyfile fails the build
-# rather than the post-install E2E that originally caught this (#378). The
-# command is a no-op on hosts without dconf installed (e.g. CI without
-# gnome-desktop), so guard with the binary rather than skip outright.
+# it here too means a malformed keyfile fails the build rather than the
+# post-install E2E that originally caught this (#378). This does not validate
+# the logo path: dconf only compiles keyfiles and stores the value as an opaque
+# string, so a missing PNG compiles fine. The image is guarded separately by
+# the [branding].files entry for /usr/share/ublue-os/bluefin-logos/bluefin.png
+# in contracts/bluefin-desktop.toml, checked by utah-verify-desktop-contract
+# immediately after this script runs. The command is a no-op on hosts without
+# dconf installed (e.g. CI without gnome-desktop), so guard with the binary
+# rather than skip outright.
 if [ -x /usr/bin/dconf ]; then
     /usr/bin/dconf update
 fi
