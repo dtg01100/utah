@@ -341,6 +341,72 @@ GNOME 51.beta
 Mutter (Wayland)
 """
 
+    # Verbatim from _temp/utah-luks-e2e/fastfetch-ocr.txt in the
+    # iso-diagnostics-utah-nvidia-gaming artifact of run 36765312662, whose
+    # screenshot plainly showed a complete fastfetch output but where the
+    # previous gate rejected because tesseract read UTAH-E2E as 'uran-£26'.
+    # This transcript already shows FASTFETCH intact; the issue (#375) is
+    # that anchoring on E2E<sep>FASTFETCH loses it.
+    REAL_TRANSCRIPT_36765312662 = """\\\u2018uran-\u00a326-FASTFETCH
+fe \\ [utahtest@utah-luks-test ~]$ ff
+
+Wed Sep 30 19:48
+
+Q_ Type to search
+
+utahtest@utah-luks-test:~
+
++
+
+utahtest@utah-luks-test
+
+utah: testing-20260930-bd4d527 &
+
+Utah (Version: testing-20260930-bd4d527)
+Linux 7.2.7-200.fc44.x86_64
+
+2 mins
+
+Forged on Sep 30 2026
+
+beans
+
+Murder Chicken:
+Bazaar Installs:
+
+» (weekly)
+» (weekly)
+
+ae
+
+KVM/QEMU Standard PC (Q35 + ICH9, 2009) (pc-q35-10.2)
+AMD EPYC 7763 64-Core (2) @ 2.44 GHz
+
+QEMU Virtual Video Controller
+
+1.37 GiB / 5.77 GiB (24%)
+
+12.39 GiB / 59.98 GiB (21%) - btrfs
+
+1920x1080 in 22", 75 Hz
+
+beeeae
+
+GNOME 51.0
+Mutter (Wayland)
+
+bash 5.3.15
+
+ghostty 1.3.2-main+b4Gacce
+46 (flatpak)
+
+@GG" OD8e°ef ON BOCKT
+
+eeuae
+
+ao Oo
+"""
+
     def matches(self, transcript):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "fastfetch-ocr.txt"
@@ -349,6 +415,12 @@ Mutter (Wayland)
 
     def test_accepts_the_transcript_that_previously_failed_a_good_screenshot(self):
         self.assertTrue(self.matches(self.REAL_TRANSCRIPT))
+
+    def test_accepts_the_transcript_that_lost_e2e_to_ocr_substitution(self):
+        # The previous gate anchored on E2E<sep>FASTFETCH, so the run
+        # 36765312662 misread of UTAH-E2E -> 'uran-£26' (with FASTFETCH intact)
+        # rejected a screenshot that plainly showed fastfetch.
+        self.assertTrue(self.matches(self.REAL_TRANSCRIPT_36765312662))
 
     def test_accepts_a_clean_transcript_with_readable_field_labels(self):
         self.assertTrue(self.matches("UTAH-E2E-FASTFETCH\nKernel: 7.1.8-100.fc43.x86_64\n"))

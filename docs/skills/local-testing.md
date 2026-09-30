@@ -1,7 +1,7 @@
 ---
 name: local-testing
 version: "1.0"
-last_updated: "2026-09-23"
+last_updated: "2026-09-30"
 id: local-testing
 one_line_purpose: Build, install, and boot Utah locally in a VM or live ISO.
 entry_point: docs/skills/local-testing.md
@@ -282,6 +282,18 @@ terminal overlay, preventing duplicate verification evidence (#240). CI sets
 kernel output, and `UTAH_E2E_REQUIRE_SCREENSHOTS=1` to reject missing PNGs.
 CI retains the tested commit/image digest and proposes evidence updates in a
 documentation PR only after all flavors pass. See [ci-workflows.md](ci-workflows.md).
+
+The fastfetch OCR gate (`iso/scripts/fastfetch-ocr-match.sh`) anchors on the
+bare word `FASTFETCH` plus a body token (`kernel` or `Linux \d+\.\d+`).
+Tesseract routinely drops or mangles glyphs in the UTAH-E2E prefix: run
+35374557822 dropped the leading `U` (TAH-E2E-FASTFETCH), and run 36765312662
+read UTAH-E2E as `uran-£26` (uran-£26-FASTFETCH, with FASTFETCH intact).
+Anchoring on `FASTFETCH` survives both because it is the only all-caps,
+non-English word in the sentinel and is the piece tesseract has been observed
+to leave intact (#375). Normalising `£→E` and friends before matching was
+considered and rejected as too broad: the body-token check plus the
+distinctive capitalised FASTFETCH are a tighter anchor than any single
+character substitution could be.
 
 Ghostty is the only terminal the harness's fastfetch capture can show, and
 this VM never has a GPU (plain stdvga, no `/dev/dri`), so its terminal
