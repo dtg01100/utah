@@ -295,6 +295,13 @@ considered and rejected as too broad: the body-token check plus the
 distinctive capitalised FASTFETCH are a tighter anchor than any single
 character substitution could be.
 
+The `FASTFETCH` match is **case-sensitive** (`grep -qF`, no `-i`) by
+design: a case-insensitive match would accept bash's own
+`fastfetch: command not found` line and any other lowercase hit, which is
+exactly what the all-caps property exists to reject. Lowercase `fastfetch`
+in the transcript therefore fails the gate even when the body token is
+present; `tests/test_iso_ci.py` pins that contrast.
+
 Ghostty is the only terminal the harness's fastfetch capture can show, and
 this VM never has a GPU (plain stdvga, no `/dev/dri`), so its terminal
 autostart entry (`iso/scripts/luks-e2e.sh`) launches it with

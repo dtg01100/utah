@@ -14,7 +14,11 @@
 #      and run 36765312662 read E2E as £26 (uran-£26-FASTFETCH). FASTFETCH is
 #      the only all-caps, non-English word in the sentinel and the only piece
 #      tesseract has been observed to leave intact across the misreads we have
-#      on record, so it is the part the gate anchors on.
+#      on record, so it is the part the gate anchors on. The match is
+#      case-sensitive (grep -qF, no -i) on purpose: case-insensitive matching
+#      would accept bash's own "fastfetch: command not found" and any other
+#      lowercase hit, which is exactly what the all-caps property exists to
+#      reject. The regression test in tests/test_iso_ci.py pins both sides.
 #   2. A token only fastfetch's own body produces, so a sentinel left in
 #      scrollback cannot pass the gate by itself. Either the "Kernel" field
 #      label or the kernel version line it labels: Bluefin's fastfetch config
