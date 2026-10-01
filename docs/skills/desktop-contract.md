@@ -157,16 +157,25 @@ user, and the sysusers fragment alone leaves the unit running as a dynamic
 user and still failing:
 
 - `system_files/shared/usr/lib/systemd/system/fwupd-refresh.service.d/10-utah-fwupd-refresh-user.conf`
-  sets `User=fwupd-refresh` / `Group=fwupd-refresh`.
+  sets `User=fwupd-refresh` / `Group=fwupd-refresh` / `DynamicUser=no`.
+  `DynamicUser=no` is the load-bearing directive: systemd's
+  `exec_directory_is_private()` (`src/core/execute.c`) gates the
+  pre-existing-public → `/var/cache/private` migration on
+  `context->dynamic_user` alone, not on whether `User=` is set, so without
+  it the migration still fires and the unit still fails the same way.
+  `User=` + `DynamicUser=yes` is a documented legal combination
+  (`systemd.exec(5)`), but it is not the combination we want here.
 - `system_files/shared/usr/lib/sysusers.d/utah-fwupd-refresh.conf` allocates
   the user with auto-allocated UID/GID. systemd-sysusers runs from
   `systemd-sysusers.service` before `local-fs.target`, so by the time
   `fwupd-refresh.timer` fires the user exists.
 
-The daemon (`fwupd.service`) is unaffected: it does not declare a
-`CacheDirectory=`. Firmware flashing still goes through the daemon, which
-keeps its existing dynamic-credential lifecycle. The pairing is asserted by
-`FwupdRefreshDropInTests` in `tests/test_desktop_contract.py`.
+The daemon (`fwupd.service`) is unaffected: it runs as root with no
+`DynamicUser=` and uses `CacheDirectory=fwupd`, so its cache lives under
+`/var/cache/fwupd` directly with no dynamic-user migration path. Firmware
+flashing still goes through the daemon, which keeps its existing root
+lifecycle. The pairing is asserted by `FwupdRefreshDropInTests` in
+`tests/test_desktop_contract.py`.
 
 ## The verifiers run twice
 
