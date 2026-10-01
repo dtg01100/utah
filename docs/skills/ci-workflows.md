@@ -170,13 +170,17 @@ Source pushes to `main` and the nightly schedule call
 to avoid evidence-update build loops. Nightly runs still sync those changes.
 
 The dispatched build that consumed a stale `PACKAGE_IMAGE_SHA` under a
-post-bump `BUILD_ID` (#371) is the failure mode every shipped image carries
-the provenance to catch: `org.opencontainers.image.revision` and
-`io.projectbluefin.utah.package_image_sha` on the OCI manifest, and the
-same two fields plus `package_image` and `version` in
-`/usr/share/utah/build-manifest.json`. A future sync workflow that pins
-its dispatched build to the SHA it just pushed will not eliminate the
-race entirely; the labels are what makes the surviving drift loud.
+post-bump `BUILD_ID` (#371) is why every shipped image carries its inputs:
+`org.opencontainers.image.revision` and
+`io.projectbluefin.utah.package_image_sha` on the OCI manifest, and the same
+two fields plus `package_image` and `version` in
+`/usr/share/utah/build-manifest.json`. `revision` is the runner's
+`GITHUB_SHA`, i.e. the ref `actions/checkout` resolved — it identifies the
+commit the image was built from, not the commit the dispatch meant to
+target. Closing the race itself still needs the sync workflow to pin its
+dispatched build to the SHA it just pushed; until then, the records are
+what let a post-mortem name the factory digest and commit a published
+image came from.
 
 ## ISO LUKS gate and screenshots
 

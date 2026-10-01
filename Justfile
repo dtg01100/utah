@@ -309,12 +309,19 @@ build-ghcr base_name stream flavor kernel_pin="":
       echo "Registry layer cache: off (${layer_cache_ref} is not readable from here)"
     fi
     # Full Utah commit SHA this build was invoked from. `GITHUB_SHA` is
-    # the captured SHA on a GitHub Actions runner (push, PR, dispatch);
-    # falling back to `git rev-parse HEAD` covers the local-only path
-    # and any future change to the runner env contract. The value lands
-    # in the org.opencontainers.image.revision label and the
-    # build-manifest sidecar so a stale-ref build is loud (#371).
+    # the captured SHA on a GitHub Actions runner (push, PR, dispatch) and
+    # is the ref actions/checkout resolved; falling back to
+    # `git rev-parse HEAD` covers the local-only path and any future change
+    # to the runner env contract. The value lands in the
+    # org.opencontainers.image.revision label and the build-manifest
+    # sidecar so a published image names the commit it came from (#371).
     build_commit="${GITHUB_SHA:-$(git rev-parse HEAD)}"
+    # The package repository digest the Containerfile pins reaches the
+    # label and /usr/share/utah/build-manifest.json through the bare
+    # `ARG PACKAGE_IMAGE_SHA` in the final stage, which inherits the global
+    # pin FROM ${PACKAGE_IMAGE_REF} already resolved. Not passing it as a
+    # build-arg is deliberate: the runner cannot be tricked into labelling
+    # an image with a digest it did not install.
     # The package repository digest the Containerfile pins reaches the
     # label and /usr/share/utah/build-manifest.json through the bare
     # `ARG PACKAGE_IMAGE_SHA` in the final stage, which inherits the global

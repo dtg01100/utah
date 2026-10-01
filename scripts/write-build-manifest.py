@@ -1,31 +1,35 @@
 #!/usr/bin/env python3
 """Write /usr/share/utah/build-manifest.json with the inputs the build consumed.
 
-The image labels carry the same fields (Containerfile LABEL block), but labels
-are easy to miss in post-mortems and tooling has to read them off the OCI
-manifest. A flat JSON document alongside image-info.json is the next-best
-thing to having the data in the package set itself: `bootc status --json` and
-`podman inspect` both surface it, and a `cat` from the running image is enough
-when the registry is unreachable.
+The image labels carry three of these fields (Containerfile LABEL block), but
+reading a label means reaching for the OCI manifest: `podman inspect` against
+a registry the post-mortem may not be able to reach, or `skopeo inspect`. The
+sidecar is a flat JSON document alongside image-info.json inside the image
+itself, so `cat /usr/share/utah/build-manifest.json` on the running host
+answers the same question offline -- and it carries `package_image`, which no
+label does.
 
 What it records:
 
-- `commit`: the full Utah commit SHA the build was dispatched against.
+- `commit`: the full Utah commit SHA the build was invoked from.
 - `package_image`: the package factory reference (without the digest).
 - `package_image_sha`: the exact `sha256:` digest the transaction resolved.
-  The runner reads the pinned `PACKAGE_IMAGE_SHA` from the checked-out
-  Containerfile so this matches the labels even on a stale-checkout build
-  (#371). `sha256:0f04...` plus an older `BUILD_COMMIT` is the mismatch
-  signature; nothing in CI used to catch it.
+  The Containerfile's final stage re-declares `ARG PACKAGE_IMAGE_SHA` bare,
+  so it inherits whatever `FROM ${PACKAGE_IMAGE_REF}` consumed and is fed
+  here unchanged; no runner step passes it. That is what keeps the sidecar
+  from naming a digest the build did not install (#371) -- `sha256:0f04...`
+  next to an older `commit` is the mismatch signature.
 - `version`: the value baked into `org.opencontainers.image.version`, so the
   manifest and the label can be diff'd in one place.
 
-Three of the four values (`commit`, `package_image_sha`, `version`) are
-also OCI LABELs, so a sanity check on the JSON is just a compare to those
-labels. `package_image` has no LABEL counterpart. The values come from
-environment variables set by build-ghcr in the Justfile; fallbacks keep
-the script invokable from a local build for parity testing without
-breaking the contract.
+Three of the four values (`commit`, `package_image_sha`, `version`) are also
+OCI LABELs (`org.opencontainers.image.revision`,
+`io.projectbluefin.utah.package_image_sha`, `org.opencontainers.image.version`),
+so a sanity check on the JSON is just a compare to those labels.
+`package_image` has no LABEL counterpart. The values come from environment
+variables the Containerfile passes through from its ARGs; fallbacks keep the
+script invokable from a local build for parity testing without breaking the
+contract.
 """
 
 from __future__ import annotations

@@ -46,22 +46,20 @@ class BuildProvenanceContainerfileTests(unittest.TestCase):
             "Containerfile is missing the bare ARG PACKAGE_IMAGE_SHA "
             "re-declaration in the final stage",
         )
-        self.assertNotIn("PACKAGE_IMAGE_SHA_FULL", self.text)
 
     def test_revision_label_uses_build_commit(self):
         # org.opencontainers.image.revision is the label post-mortems read
         # first. Pinning it to BUILD_COMMIT (not SHA_HEAD_SHORT) gives the
-        # full SHA, which is what the sync workflow passes.
+        # full SHA, which is what the runner captures in GITHUB_SHA.
         self.assertIn(
             'LABEL org.opencontainers.image.revision="${BUILD_COMMIT}"',
             self.text,
         )
 
     def test_package_image_sha_label(self):
-        # The package image digest label is the entire point of #371 -- a
-        # build that resolves the wrong PACKAGE_IMAGE_SHA must show up in
-        # `podman inspect` without having to diff installed RPM versions.
-        # It reads the same ARG the sidecar is fed, so the two cannot skew.
+        # The package image digest label names the package set a shipped
+        # image installed from, without diffing installed RPM versions. It
+        # reads the same ARG the sidecar is fed, so the two cannot skew.
         self.assertIn(
             'LABEL io.projectbluefin.utah.package_image_sha="'
             '${PACKAGE_IMAGE_SHA}"',

@@ -54,7 +54,9 @@ checks (`scripts/check-skill-frontmatter.sh`, `scripts/check-skill-index.sh`,
   `PACKAGE_IMAGE_SHA`, `COMMON_IMAGE_SHA`, `BREW_IMAGE_SHA`). Do not bump them
   by hand unless the task is exactly that. `Containerfile` and
   `Containerfile.kernel` must share the same `BASE_IMAGE` line; `just check`
-  asserts it.
+  asserts it. A `PACKAGE_IMAGE_SHA` bump must also move the `# factory-pin:`
+  stamp in `packages/utah-packages.repo` — the stamp is the transaction's
+  layer-cache key, the ARG alone does not bust it (#371).
 - **Layer discipline.** Read the comment block at the top of `Containerfile`
   before editing it: sources arrive in as few COPYs as origins allow, small
   RUN steps fold into neighbours, and per-image ARGs are declared late because
@@ -71,21 +73,24 @@ checks (`scripts/check-skill-frontmatter.sh`, `scripts/check-skill-index.sh`,
 - **Fedora repositories are never enabled at runtime.** Packages come from the
   pinned `utah-packages` OCI repository and Hummingbird's own repository.
 - **Every published image records its inputs.** The Containerfile writes
-  `org.opencontainers.image.revision` (full Utah commit SHA) and
-  `io.projectbluefin.utah.package_image_sha` (the `PACKAGE_IMAGE_SHA` the
-  transaction resolved) as LABELs, and `scripts/write-build-manifest.py`
-  writes the same fields plus `package_image` and `version` to
+  `org.opencontainers.image.revision` (the full Utah commit SHA the build
+  was invoked from) and `io.projectbluefin.utah.package_image_sha` (the
+  `PACKAGE_IMAGE_SHA` the transaction resolved) as LABELs, and
+  `scripts/write-build-manifest.py` writes the same fields plus
+  `package_image` and `version` to
   `/usr/share/utah/build-manifest.json`. A `workflow_dispatch` of the
   testing build can race the sync push that triggered it (#371): the
-  GitHub API sometimes serves the pre-push commit at dispatch creation,
-  the build installs the pre-bump package set, and `BUILD_ID` from
-  `git rev-parse --short HEAD` matches the checkout but disagrees with
-  the commit the dispatch was claimed to target. The labels are the next
-  safety net: a stale-ref build is loud on `podman inspect` instead of
-  buried in installed RPM versions. Editing the labels or the
-  build-manifest sidecar means keeping both in sync; editing the
-  captured SHA on the runner means keeping `GITHUB_SHA`,
-  `BUILD_COMMIT`, and `git rev-parse HEAD` in lockstep.
+  GitHub API sometimes serves the pre-push commit at dispatch creation and
+  the build installs the pre-bump package set. `revision` is `GITHUB_SHA`,
+  the ref `actions/checkout` resolved, so it cannot on its own prove the
+  build disagreed with the dispatch's intended target — pinning the
+  dispatch to an explicit SHA is the fix for that, and is not yet
+  implemented. What the records do buy is the factory digest and commit a
+  published image was built from, readable from `podman inspect` or from
+  the sidecar on a running host instead of inferred from installed RPM
+  versions. Editing the labels or the build-manifest sidecar means keeping
+  both in sync; editing the captured SHA on the runner means keeping
+  `GITHUB_SHA`, `BUILD_COMMIT`, and `git rev-parse HEAD` in lockstep.
 
 ## What agents must not touch
 

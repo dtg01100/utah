@@ -3,7 +3,7 @@ ARG BASE_IMAGE=quay.io/hummingbird-community/bootc-os:latest@sha256:ee9a5d4d2379
 # Keep this pin in Utah so an image build is reproducible and can be reviewed
 # against the exact package set it consumes.
 ARG PACKAGE_IMAGE=ghcr.io/projectbluefin/utah-packages
-ARG PACKAGE_IMAGE_SHA=sha256:0f04cff2dd0b085604ff3cd79d538ab14b97cbe356980f7d365a35dfc70c857b
+ARG PACKAGE_IMAGE_SHA=sha256:377715961b6a5af9021353d4dab8b8e5fdaa1d1c343bc617bb24320ecee270b6
 # CI keeps PACKAGE_IMAGE_SHA pinned. PACKAGE_IMAGE_REF supports a local image
 # in containers-storage, where no registry digest is available.
 ARG PACKAGE_IMAGE_REF=${PACKAGE_IMAGE}@${PACKAGE_IMAGE_SHA}
@@ -177,11 +177,14 @@ ARG SHA_HEAD_SHORT=unknown
 # with the packages it installed (#371).
 ARG PACKAGE_IMAGE
 ARG PACKAGE_IMAGE_SHA
-# Full Utah commit SHA the build was dispatched against. Captured here as a
-# label and again in /usr/share/utah/build-manifest.json so the next
-# post-mortem compares the installed package set to the exact commit that
-# pinned it, instead of inferring from BUILD_ID (#371). build-ghcr passes
-# `git rev-parse HEAD`; local builds fall back to the same plumbing.
+# Full Utah commit SHA this build was invoked from. Captured here as a
+# label and again in /usr/share/utah/build-manifest.json so a post-mortem
+# can name the commit a published image came from, instead of inferring it
+# from the short BUILD_ID (#371). On a runner it is GITHUB_SHA, which is
+# the ref actions/checkout resolved, so it pins the image to a reviewable
+# commit; it does not by itself prove that commit was the dispatch's
+# intended target. build-ghcr passes it; local builds fall back to
+# `git rev-parse HEAD`.
 ARG BUILD_COMMIT=unknown
 # Production images keep SSH closed; local VM diagnostics can opt in with
 # ENABLE_SSHD=1, following tunaOS's debug-image convention.
@@ -271,9 +274,10 @@ RUN --mount=type=bind,from=packages,source=/repository,target=/etc/utah-packages
 # cleanup erases the build residue that explains it.
 #
 # The build-manifest write also precedes clean-stage, for ordering only: it
-# captures BUILD_COMMIT and PACKAGE_IMAGE_SHA so a future post-mortem can
-# verify the image matches the commit the dispatch claimed (#371).
-# clean-stage.sh clears only /var, /run, /tmp and /utah-cache, so the
+# captures BUILD_COMMIT and PACKAGE_IMAGE_SHA so a post-mortem can read the
+# commit and the factory digest off a running image, not just off the OCI
+# manifest (#371). clean-stage.sh clears only /var, /run, /tmp and
+# /utah-cache, so the
 # published image keeps both the JSON and the
 # /usr/local/libexec/utah-* helpers that wrote it.
 RUN /usr/local/libexec/utah-fix-home-labels --check && \
@@ -293,9 +297,9 @@ LABEL org.opencontainers.image.version="${VERSION}"
 LABEL org.opencontainers.image.revision="${BUILD_COMMIT}"
 # Records the package repository digest the transaction resolved against. This
 # is the same ARG the FROM ${PACKAGE_IMAGE_REF} line consumed and the same one
-# the sidecar is fed, so label and manifest cannot disagree; it makes a
-# stale-ref build (one whose checkout lagged the dispatch, #371) visible from
-# `podman inspect` instead of from installed RPM versions.
+# the sidecar is fed, so label and manifest cannot disagree; it names the
+# package set a shipped image installed from without diffing installed RPM
+# versions (#371).
 LABEL io.projectbluefin.utah.package_image_sha="${PACKAGE_IMAGE_SHA}"
 LABEL containers.bootc=1
 
