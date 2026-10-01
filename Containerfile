@@ -209,11 +209,14 @@ ARG UUPD_TIMER_SHA256=bbb5f098ec33d047bdef571e0bc112364df157e0f92d73e0febab703c4
 # system-logo-white.png -- plus themes/spinner/watermark.png, so the RPM
 # transaction wins over the early overlay for exactly those files. Without this
 # second overlay GDM falls back to the schema default (a GDM dconf keyfile is
-# in flight as #378/#379) and the about dialog, Plymouth, and system-info
-# panels keep showing the Fedora wordmark. Only the paths that conflict with
-# packages are reapplied; dconf, services, and Brewfiles are not owned by any
-# RPM and stay where the first overlay put them. utah-verify-desktop-contract
-# below asserts the result with `rpm -V fedora-logos`, so the ordering is
+# in flight as #378/#379) and the about dialog and system-info panels keep
+# showing the Fedora wordmark. watermark.png is reapplied because fedora-logos
+# owns it, not because anything renders it yet: Utah does not ship plymouth
+# (planned, #263), so that path only matters once it does. Only the paths
+# that conflict with packages are reapplied; dconf, services, and Brewfiles
+# are not owned by any RPM and stay where the first overlay put them.
+# utah-verify-desktop-contract below asserts the result with
+# `rpm -V fedora-logos`, so the ordering is
 # proven against the composed image rather than against the file as written.
 #
 # Comments stay out of the && chain below on purpose: buildah's parser treats an

@@ -502,8 +502,10 @@ class BrandAssetOverlayOrderTests(unittest.TestCase):
     before the package transaction -- so the RPM wins and every fedora-*.png,
     ``system-logo-white.png``, and the spinner watermark revert to Fedora
     branding. The GDM greeter is masked by a dconf keyfile (#378); the other
-    consumers (Plymouth, About dialog, system-info panels) are not, so they
-    would still show the Fedora wordmark without a reapplied overlay.
+    consumers (About dialog, system-info panels) are not, so they
+    would still show the Fedora wordmark without a reapplied overlay. Utah
+    does not ship ``plymouth`` yet (planned, #263), so the spinner watermark
+    is reapplied for ownership, not because anything renders it today.
 
     The fix is a second bind-mount of Common's brand assets into the RUN
     block that runs after the package install, so the Bluefin-marked files
@@ -541,10 +543,12 @@ class BrandAssetOverlayOrderTests(unittest.TestCase):
         )
 
     def test_plymouth_overlay_is_reapplied_after_package_install(self):
-        """Same constraint for the Plymouth ``spinner`` theme: fedora-logos
-        overwrites ``watermark.png`` and ``silverblue-watermark.png`` with
-        Fedora-marked copies, so the bind-mount must appear after the
-        package transaction.
+        """Same constraint for the ``spinner`` theme under
+        ``/usr/share/plymouth``: fedora-logos owns ``watermark.png`` and
+        overwrites it with a Fedora-marked copy, so the bind-mount must
+        appear after the package transaction. ``silverblue-watermark.png``
+        ships in the same Common tree but no RPM owns it, so it is not part
+        of the contract's ``[branding.rpm_overrides]`` list.
         """
         text = self._containerfile()
         packages_index = text.find("/usr/local/libexec/utah-install-packages")
