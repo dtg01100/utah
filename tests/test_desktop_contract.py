@@ -522,6 +522,85 @@ class GdmGreeterLogoTests(unittest.TestCase):
         self.assertEqual(len(active_lines), 2, f"unexpected active lines: {active_lines}")
 
 
+class FwupdRefreshDropInTests(unittest.TestCase):
+    """fwupd-refresh.service ships with DynamicUser=yes and CacheDirectory=fwupdmgr
+    on Fedora/Hummingbird. The combination triggers a pre-existing-public ->
+    /var/cache/private migration at every boot; in this bootc image the
+    rename returns EPERM and the unit exits 1, so firmware metadata never
+    refreshes (#385).
+
+    The drop-in at
+    system_files/shared/usr/lib/systemd/system/fwupd-refresh.service.d/
+    binds the unit to a static user (fwupd-refresh) so the migration code
+    in systemd never runs. The user is allocated by the sysusers.d fragment
+    at system_files/shared/usr/lib/sysusers.d/utah-fwupd-refresh.conf.
+    """
+
+    DROP_IN = ROOT / "system_files/shared/usr/lib/systemd/system/fwupd-refresh.service.d/10-utah-fwupd-refresh-user.conf"
+    SYSUSERS = ROOT / "system_files/shared/usr/lib/sysusers.d/utah-fwupd-refresh.conf"
+
+    def test_drop_in_exists_and_overrides_dynamic_user(self):
+        self.assertTrue(self.DROP_IN.is_file(), f"missing drop-in at {self.DROP_IN}")
+        text = self.DROP_IN.read_text()
+        # The drop-in must declare [Service] and bind the unit to a fixed
+        # user so the migration path in systemd (DynamicUser=yes +
+        # CacheDirectory=fwupdmgr) is skipped.
+        self.assertIn("[Service]", text)
+        self.assertIn("User=fwupd-refresh", text)
+        self.assertIn("Group=fwupd-refresh", text)
+        # systemd rejects the combination DynamicUser= alongside a fixed
+        # User=. Only directive lines count; comments explaining the bug
+        # may still mention DynamicUser=yes for context.
+        directive_lines = [
+            line for line in text.splitlines()
+            if line and not line.lstrip().startswith("#")
+        ]
+        for line in directive_lines:
+            self.assertFalse(
+                line.lstrip().startswith("DynamicUser="),
+                f"drop-in must not redeclare DynamicUser= as a directive: {line!r}",
+            )
+
+    def test_drop_in_documents_the_bug(self):
+        text = self.DROP_IN.read_text()
+        # The comment must cite the actual symptom so a future reader can
+        # verify the override still addresses it.
+        self.assertIn("CacheDirectory=fwupdmgr", text)
+        self.assertIn("/var/cache/private/fwupdmgr", text)
+        self.assertIn("DynamicUser=yes", text)
+        self.assertIn("#385", text)
+
+    def test_sysusers_entry_allocates_the_user(self):
+        self.assertTrue(self.SYSUSERS.is_file(), f"missing sysusers fragment at {self.SYSUSERS}")
+        text = self.SYSUSERS.read_text()
+        # The active line must create the user with auto-allocated UID/GID.
+        # systemd-sysusers.d format: 'TYPE NAME ID GECOS [HOME [SHELL]]'.
+        # The GECOS field is quoted and may contain spaces, so split with
+        # maxsplit=3 (keeps the rest of the line as a single field).
+        active = [line for line in text.splitlines() if line and not line.lstrip().startswith("#")]
+        self.assertEqual(len(active), 1, "sysusers fragment must have exactly one active line")
+        fields = active[0].split(None, 3)
+        self.assertEqual(fields[0], "u")
+        self.assertEqual(fields[1], "fwupd-refresh")
+        self.assertEqual(fields[2], "-", "UID/GID must be auto-allocated, not pinned")
+        self.assertIn("Firmware", fields[3])
+        # The fragment must reference the drop-in it serves so the pair
+        # cannot be deleted independently without leaving an orphan line.
+        self.assertIn("10-utah-fwupd-refresh-user.conf", text)
+        self.assertIn("#385", text)
+
+    def test_drop_in_and_sysusers_agree_on_user_name(self):
+        # Catch the case where one file is renamed and the other is not.
+        drop_in_user = None
+        for line in self.DROP_IN.read_text().splitlines():
+            stripped = line.strip()
+            if stripped.startswith("User="):
+                drop_in_user = stripped.split("=", 1)[1].strip()
+                break
+        sysusers_lines = self.SYSUSERS.read_text().splitlines()
+        active = [line for line in sysusers_lines if line and not line.lstrip().startswith("#")]
+        self.assertEqual(drop_in_user, active[0].split(None, 3)[1])
+
 
 if __name__ == "__main__":
     unittest.main()
