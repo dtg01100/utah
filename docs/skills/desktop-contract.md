@@ -148,18 +148,19 @@ The early overlay (see the `cp -a /tmp/utah-bluefin/. /` step in the
 Containerfile) lays Common's Bluefin-marked copies of `/usr/share/pixmaps/`
 and `/usr/share/plymouth/themes/spinner/` on disk. The package transaction
 that installs `fedora-logos` then runs and overwrites those files with
-Fedora-marked copies. Every path in `/usr/share/pixmaps/` is at risk
-(`fedora-gdm-logo.png`, `fedora-logo.png`, `fedora-logo-icon.png`,
-`fedora-logo-small.png`, `fedora-logo-sprite.png`, `fedora_logo_med.png`,
-`fedora_whitelogo_med.png`, `system-logo-white.png`); Plymouth's spinner
-theme is at risk the same way (`watermark.png`, `silverblue-watermark.png`).
+Fedora-marked copies. Seven paths in `/usr/share/pixmaps/` are at risk
+(`fedora-gdm-logo.png`, `fedora-logo.png`, `fedora-logo-small.png`,
+`fedora-logo-sprite.png`, `fedora_logo_med.png`, `fedora_whitelogo_med.png`,
+`system-logo-white.png`); Plymouth's spinner theme loses `watermark.png` the
+same way.
 
 The GDM greeter will be masked by an `org.gnome.login-screen.logo` dconf
 keyfile under `/etc/dconf/db/gdm.d/01-bluefin-gdm-logo` once #379 (#378)
-lands; until then GDM still falls back to the schema default. The other
-consumers — Plymouth, the About dialog, system-info panels, the login
-session background on the gnome-shell that runs *after* GDM — would keep
-doing so without the second overlay.
+lands; until then GDM still falls back to the schema default. (#379 is still
+open; whichever of #379 and this change merges second must update this
+paragraph.) The other consumers — Plymouth, the About dialog, system-info
+panels, the login session background on the gnome-shell that runs *after*
+GDM — would keep doing so without the second overlay.
 
 The fix binds Common's brand-asset trees into the post-package-install RUN
 step (`--mount=type=bind,from=common,...`) and `cp -a`s them onto the
@@ -170,6 +171,53 @@ reapplied. `tests/test_desktop_contract.py::BrandAssetOverlayOrderTests`
 asserts the bind-mount order against the file as written so a reorder
 that re-introduces the regression fails the unit suite before any image is
 composed.
+
+### The image, not the Containerfile, is what gets asserted
+
+Containerfile text order is necessary but not sufficient: a re-overlay that
+mounts the right trees and copies nothing useful reads the same. The composed
+image is asserted instead, by `[branding.rpm_overrides]` in
+`contracts/bluefin-desktop.toml`:
+
+```toml
+[branding.rpm_overrides.fedora-logos]
+paths = ["/usr/share/pixmaps/fedora-logo.png", ...]
+```
+
+`verify-desktop-contract.py` runs `rpm -V --nomtime --nouser --nogroup
+--nomode fedora-logos` and requires a digest mismatch (column 3 of the
+attribute string is `5`) for every listed path. A file that still matches the
+package it came from is proof the RPM transaction had the last word, which is
+the #398 regression exactly. Size- or timestamp-only differences do not count.
+A listed path that is missing fails too, and the check is skipped with a note
+when the package is not installed or `rpm` is unavailable.
+
+The eight listed paths are the intersection of Common's
+`/system_files/bluefin/usr/share/{pixmaps,plymouth}` and the file list of
+`fedora-logos`: `fedora-gdm-logo.png`, `fedora-logo.png`,
+`fedora-logo-small.png`, `fedora-logo-sprite.png`, `fedora_logo_med.png`,
+`fedora_whitelogo_med.png`, `system-logo-white.png`, and
+`themes/spinner/watermark.png`. Common also ships `fedora-logo-icon.png` and
+`silverblue-watermark.png`, which `fedora-logos` does not own, so no RPM
+contends for them and they are not listed.
+
+The intersection was taken against the pinned artifacts, not inferred: the
+Common image at `COMMON_IMAGE_SHA` (`sha256:57b4cada…`) and
+`fedora-logos-42.0.1-6` (`42.0.1-6.hum1` in `baselines/utah/rpms.tsv`). All
+eight paths exist in both and all eight differ in content, so `rpm -V` reports
+a digest mismatch for each once the second overlay runs and for none of them
+if it does not — for example `system-logo-white.png` is `0e9ea615…` in Common
+and `b324d2c7…` in the RPM.
+
+### Comments stay outside the RUN chain
+
+The notes for that step live above the `RUN`, not indented inside the `&& \`
+chain. The image is built with podman/buildah, whose imagebuilder parser has
+no comment handling in its continuation loop: an indented `#` line is read as
+an empty continuation and logs `[WARNING]: Empty continuation line found …
+will become errors in a future release`.
+`tests/test_desktop_contract.py::ContainerfileContinuationTests` fails the
+unit suite on any comment line inside a `RUN` continuation.
 
 ## The verifiers run twice
 

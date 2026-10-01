@@ -386,6 +386,112 @@ class ServiceMaskParityTests(unittest.TestCase):
             mock_run.assert_not_called()
 
 
+class RpmOverrideVerificationTests(unittest.TestCase):
+    """Issue #398: the overlay must be proven against the image, not the text.
+
+    ``BrandAssetOverlayOrderTests`` below only reads the Containerfile, so it
+    cannot tell a working re-overlay from one that mounts the right paths and
+    copies nothing useful. ``rpm -V`` is the image-level evidence: a file whose
+    content still matches the package it came from means the RPM transaction
+    had the last word, which is exactly the regression.
+    """
+
+    RPM_V_OUTPUT = (
+        "..5....T.  c /usr/share/pixmaps/fedora-logo.png\n"
+        "S.5....T.    /usr/share/plymouth/themes/spinner/watermark.png\n"
+        "S........    /usr/share/pixmaps/system-logo-white.png\n"
+    )
+
+    def test_modified_paths_parses_digest_column_only(self):
+        with patch("subprocess.run") as run:
+            run.return_value.stdout = self.RPM_V_OUTPUT
+            run.return_value.returncode = 1
+            modified = desktop.rpm_modified_paths("fedora-logos")
+        self.assertEqual(
+            modified,
+            {
+                "/usr/share/pixmaps/fedora-logo.png",
+                "/usr/share/plymouth/themes/spinner/watermark.png",
+            },
+        )
+        # A size-only difference is not evidence the overlay won.
+        self.assertNotIn("/usr/share/pixmaps/system-logo-white.png", modified)
+
+    def test_missing_rpm_binary_is_reported_not_crashed(self):
+        with patch("subprocess.run", side_effect=FileNotFoundError):
+            self.assertIsNone(desktop.rpm_modified_paths("fedora-logos"))
+
+    def test_unmodified_path_fails(self):
+        overrides = {"fedora-logos": {"paths": ["/usr/share/pixmaps/fedora-logo.png"]}}
+        with patch.object(desktop, "package_installed", return_value=True), patch.object(
+            desktop, "rpm_modified_paths", return_value=set()
+        ), patch.object(Path, "is_file", return_value=True):
+            errors = desktop.verify_rpm_overrides(overrides)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("#398", errors[0])
+
+    def test_overridden_path_passes(self):
+        path = "/usr/share/pixmaps/fedora-logo.png"
+        with patch.object(desktop, "package_installed", return_value=True), patch.object(
+            desktop, "rpm_modified_paths", return_value={path}
+        ), patch.object(Path, "is_file", return_value=True):
+            errors = desktop.verify_rpm_overrides({"fedora-logos": {"paths": [path]}})
+        self.assertEqual(errors, [])
+
+    def test_missing_file_fails(self):
+        path = "/usr/share/pixmaps/fedora-logo.png"
+        with patch.object(desktop, "package_installed", return_value=True), patch.object(
+            desktop, "rpm_modified_paths", return_value={path}
+        ), patch.object(Path, "is_file", return_value=False):
+            errors = desktop.verify_rpm_overrides({"fedora-logos": {"paths": [path]}})
+        self.assertEqual(len(errors), 1)
+        self.assertIn("missing", errors[0])
+
+    def test_uninstalled_package_is_skipped(self):
+        with patch.object(desktop, "package_installed", return_value=False):
+            errors = desktop.verify_rpm_overrides(
+                {"fedora-logos": {"paths": ["/usr/share/pixmaps/fedora-logo.png"]}}
+            )
+        self.assertEqual(errors, [])
+
+    def test_contract_rejects_relative_override_path(self):
+        contract = {
+            "branding": {"rpm_overrides": {"fedora-logos": {"paths": ["usr/share/x.png"]}}},
+            "configuration": {"files": []},
+            "flatpak": {"apps": ["a.b.C"], "brewfile": "/x"},
+            "services": {},
+        }
+        errors = desktop.validate_contract(contract)
+        self.assertTrue(any("must be absolute" in e for e in errors))
+
+    def test_contract_rejects_empty_override_list(self):
+        contract = {
+            "branding": {"rpm_overrides": {"fedora-logos": {"paths": []}}},
+            "configuration": {"files": []},
+            "flatpak": {"apps": ["a.b.C"], "brewfile": "/x"},
+            "services": {},
+        }
+        errors = desktop.validate_contract(contract)
+        self.assertTrue(any("at least one path" in e for e in errors))
+
+    def test_shipped_contract_covers_the_conflicting_paths(self):
+        """The shipped contract must name the paths Common and fedora-logos
+        both own. Verified against the pinned Common image
+        (``/system_files/bluefin/usr/share/{pixmaps,plymouth}``) and the
+        fedora-logos file list; a path dropped from here is a silent hole.
+        """
+        import tomllib
+
+        contract = tomllib.loads((ROOT / "contracts" / "bluefin-desktop.toml").read_text())
+        paths = set(contract["branding"]["rpm_overrides"]["fedora-logos"]["paths"])
+        for required in (
+            "/usr/share/pixmaps/fedora-logo.png",
+            "/usr/share/pixmaps/system-logo-white.png",
+            "/usr/share/plymouth/themes/spinner/watermark.png",
+        ):
+            self.assertIn(required, paths)
+
+
 class BrandAssetOverlayOrderTests(unittest.TestCase):
     """Issue #398: the brand-asset overlay must run AFTER the package transaction.
 
@@ -478,6 +584,34 @@ class BrandAssetOverlayOrderTests(unittest.TestCase):
             text,
             r"cp -a /tmp/utah-bluefin-plymouth/\.\s+/usr/share/plymouth/",
             "Re-overlay must cp Common's Plymouth theme into /usr/share/plymouth/ (#398)",
+        )
+
+
+class ContainerfileContinuationTests(unittest.TestCase):
+    """Comments may not live inside a `RUN ... && \\` continuation chain.
+
+    The image is built with buildah/podman, whose imagebuilder parser has no
+    comment handling inside the continuation loop: an indented `#` line is read
+    as an empty continuation and emits "Empty continuation line found ... will
+    become errors in a future release". Notes belong above the RUN.
+    """
+
+    CONTAINERFILE = ROOT / "Containerfile"
+
+    def test_no_comment_lines_inside_run_continuations(self):
+        offenders = []
+        continuing = False
+        for number, line in enumerate(self.CONTAINERFILE.read_text().splitlines(), 1):
+            if continuing and line.lstrip().startswith("#"):
+                offenders.append(f"{number}: {line.strip()}")
+            stripped = line.rstrip()
+            if continuing or stripped.startswith("RUN "):
+                continuing = stripped.endswith("\\")
+        self.assertEqual(
+            offenders,
+            [],
+            "comment lines inside a RUN continuation become empty continuation lines "
+            f"for buildah; move them above the RUN: {offenders}",
         )
 
 

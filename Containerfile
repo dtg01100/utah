@@ -200,6 +200,25 @@ ARG UUPD_TIMER_SHA256=bbb5f098ec33d047bdef571e0bc112364df157e0f92d73e0febab703c4
 # own and cost forty seconds to commit a few megabytes. It lives in
 # scripts/mirror-shim.sh rather than inline, because as a bare && chain a
 # failure printed nothing at all -- see the comment at the top of that script.
+#
+# The two bind mounts re-apply Common's brand assets on top of what the package
+# transaction installed (#398). Common's /system_files/bluefin ships
+# Bluefin-marked copies of seven paths fedora-logos also owns --
+# fedora-gdm-logo.png, fedora-logo.png, fedora-logo-small.png,
+# fedora-logo-sprite.png, fedora_logo_med.png, fedora_whitelogo_med.png,
+# system-logo-white.png -- plus themes/spinner/watermark.png, so the RPM
+# transaction wins over the early overlay for exactly those files. Without this
+# second overlay GDM falls back to the schema default (a GDM dconf keyfile is
+# in flight as #378/#379) and the about dialog, Plymouth, and system-info
+# panels keep showing the Fedora wordmark. Only the paths that conflict with
+# packages are reapplied; dconf, services, and Brewfiles are not owned by any
+# RPM and stay where the first overlay put them. utah-verify-desktop-contract
+# below asserts the result with `rpm -V fedora-logos`, so the ordering is
+# proven against the composed image rather than against the file as written.
+#
+# Comments stay out of the && chain below on purpose: buildah's parser treats an
+# indented `#` line inside a continuation as an empty continuation line and
+# warns that it will become an error.
 RUN --mount=type=bind,from=common,source=/system_files/bluefin/usr/share/pixmaps,target=/tmp/utah-bluefin-pixmaps,ro \
     --mount=type=bind,from=common,source=/system_files/bluefin/usr/share/plymouth,target=/tmp/utah-bluefin-plymouth,ro \
     mkdir -p /tmp/uupd && \
@@ -215,21 +234,8 @@ RUN --mount=type=bind,from=common,source=/system_files/bluefin/usr/share/pixmaps
     echo "${UUPD_TIMER_SHA256}  /tmp/uupd/uupd.timer" | sha256sum --check --strict && \
     /usr/local/libexec/utah-build-gnome-extensions && \
     /usr/local/libexec/utah-verify-gnome-extensions && \
-    # Re-apply Common's brand assets on top of what the package transaction
-    # installed (#398). fedora-logos ships Fedora-marked replacements for the
-    # pixmaps and Plymouth themes the early overlay laid down; without this
-    # reapplied layer, GDM would still fall back to the schema default (a
-    # GDM dconf keyfile is in flight as #378/#379), and other consumers --
-    # the about dialog, Plymouth, system-info panels -- would keep showing
-    # the Fedora wordmark. Only the paths that conflict with packages are
-    # reapplied; dconf, services, and Brewfiles are unaffected
-    # by RPMs and stay where the first overlay put them.
     cp -a /tmp/utah-bluefin-pixmaps/. /usr/share/pixmaps/ && \
     cp -a /tmp/utah-bluefin-plymouth/. /usr/share/plymouth/ && \
-    # Bind mounts (/tmp/utah-bluefin-{pixmaps,plymouth}) vanish when this RUN
-    # exits; rm -rf on them fails with EROFS because the mounts are ro. The
-    # mirrors under /usr/share/{pixmaps,plymouth}/ are the files that actually
-    # ship; nothing else needs cleanup here.
     glib-compile-schemas /usr/share/glib-2.0/schemas && \
     ENABLE_SSHD="${ENABLE_SSHD}" /usr/local/libexec/utah-configure-services && \
     /usr/local/libexec/utah-configure-branding && \
@@ -242,6 +248,12 @@ RUN --mount=type=bind,from=common,source=/system_files/bluefin/usr/share/pixmaps
 # v4l2loopback comes last, after the NVIDIA installer, which may remove modules
 # it takes for an earlier driver's: the base module staged by the builder stage
 # is registered and asserted, and the gaming flavors compile one for OGC.
+#
+# The sed at the end disables the package repository: it is now only ever bind
+# mounted, so it is absent from the committed image. Flipping it disabled in
+# the last step that installs anything keeps later dnf calls on the image (the
+# live ISO build's included) from failing on a file:// baseurl that no longer
+# exists.
 RUN --mount=type=bind,from=packages,source=/repository,target=/etc/utah-packages,ro \
     case "${IMAGE_FLAVOR}" in \
       gaming|nvidia-gaming) /usr/local/libexec/utah-install-ogc-kernel ;; \
@@ -259,10 +271,6 @@ RUN --mount=type=bind,from=packages,source=/repository,target=/etc/utah-packages
     esac && \
     IMAGE_FLAVOR="${IMAGE_FLAVOR}" /usr/local/libexec/utah-verify-rpm-contract \
       /usr/share/utah/bluefin.toml /usr/share/utah/utah.toml && \
-    # The package repository is now only ever bind mounted, so it is absent from
-    # the committed image. Flip it disabled here -- the last step that installs
-    # anything -- so later dnf calls on the image (the live ISO build's included)
-    # do not fail on a file:// baseurl that no longer exists.
     sed -i 's/^enabled=1$/enabled=0/' /etc/yum.repos.d/utah-packages.repo \
       && grep -q '^enabled=0$' /etc/yum.repos.d/utah-packages.repo
 

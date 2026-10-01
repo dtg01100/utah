@@ -96,6 +96,75 @@ def unit_masked(unit: str, root: Path = Path("/")) -> bool:
     return False
 
 
+def package_installed(package: str) -> bool:
+    try:
+        result = subprocess.run(
+            ["rpm", "-q", package], capture_output=True, text=True, check=False
+        )
+        return result.returncode == 0
+    except FileNotFoundError:
+        return False
+
+
+def rpm_modified_paths(package: str) -> set[str] | None:
+    """Paths of ``package`` whose on-disk content no longer matches the RPM.
+
+    ``rpm -V`` prints one line per differing file, ``S.5....T.  /path``, where
+    column 2 is ``5`` when the digest differs. A non-zero exit only means
+    differences were found, which is exactly what the brand overlay produces,
+    so the exit status is ignored and the attribute string is parsed instead.
+    Returns ``None`` when rpm itself is unavailable.
+    """
+    try:
+        result = subprocess.run(
+            ["rpm", "-V", "--nomtime", "--nouser", "--nogroup", "--nomode", package],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return None
+    modified: set[str] = set()
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        attrs, path = parts[0], parts[-1]
+        if len(attrs) >= 3 and attrs[2] == "5":
+            modified.add(path)
+    return modified
+
+
+def verify_rpm_overrides(overrides: dict[str, Any]) -> list[str]:
+    """Assert the brand overlay out-ranks the packages that own the same paths.
+
+    Issue #398: the overlay that runs before the package transaction loses
+    every one of these files to the RPM. A digest mismatch is the image-level
+    evidence that the second overlay ran after the install.
+    """
+    errors: list[str] = []
+    for package, spec in overrides.items():
+        paths = spec.get("paths", [])
+        if not paths:
+            continue
+        if not package_installed(package):
+            print(f"note: {package} is not installed; brand overlay is unopposed")
+            continue
+        modified = rpm_modified_paths(package)
+        if modified is None:
+            print(f"note: rpm is unavailable; cannot verify {package} overrides")
+            continue
+        for path in paths:
+            if not Path(path).is_file():
+                errors.append(f"required file is missing: {path}")
+            elif path not in modified:
+                errors.append(
+                    f"{path} still matches the copy {package} installed; Common's brand"
+                    " overlay must be reapplied after the package transaction (#398)"
+                )
+    return errors
+
+
 def validate_contract(contract: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     for section in ("branding", "configuration", "flatpak", "services"):
@@ -105,6 +174,13 @@ def validate_contract(contract: dict[str, Any]) -> list[str]:
         for file_name in contract.get(section, {}).get("files", []):
             if not Path(file_name).is_absolute():
                 errors.append(f"{section} file must be absolute: {file_name}")
+    for package, spec in contract.get("branding", {}).get("rpm_overrides", {}).items():
+        paths = spec.get("paths", [])
+        if not paths:
+            errors.append(f"rpm_overrides.{package} must list at least one path")
+        for path in paths:
+            if not Path(path).is_absolute():
+                errors.append(f"rpm_overrides.{package} path must be absolute: {path}")
     flatpak = contract.get("flatpak", {})
     apps = flatpak.get("apps", [])
     if not apps:
@@ -150,6 +226,8 @@ def main() -> int:
             branding.get("os_release_patterns", {}),
         )
     )
+
+    errors.extend(verify_rpm_overrides(branding.get("rpm_overrides", {})))
 
     image_info_path = Path("/usr/share/ublue-os/image-info.json")
     if image_info_path.is_file():
@@ -210,10 +288,15 @@ def main() -> int:
         return 1
     masked_count = len(services.get("masked", []))
     masked_msg = f", {masked_count} masked services" if masked_count else ""
+    override_count = sum(
+        len(spec.get("paths", []))
+        for spec in branding.get("rpm_overrides", {}).values()
+    )
+    override_msg = f", {override_count} RPM-overridden brand assets" if override_count else ""
     print(
         f"Utah desktop contract passed: {len(flatpak['apps'])} Flatpaks, "
         f"{len(services.get('enabled', []))} enabled services, "
-        f"{len(services.get('user_enabled', []))} user services{masked_msg}"
+        f"{len(services.get('user_enabled', []))} user services{masked_msg}{override_msg}"
     )
     return 0
 

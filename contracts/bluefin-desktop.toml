@@ -47,6 +47,27 @@ image-ref = '^ostree-image-signed:docker://ghcr\.io/projectbluefin/utah(-nvidia|
 image-tag = '^.+$'
 fedora-version = '^\d+$'
 
+# Paths an RPM owns that Common's Bluefin brand overlay must win over (#398).
+# The early overlay in the Containerfile runs before the package transaction,
+# so fedora-logos reinstalls Fedora-marked copies over every one of these; the
+# second overlay after the install is what makes the Bluefin files ship. The
+# in-image verifier proves that with `rpm -V`, which reports a digest mismatch
+# for a file whose content no longer matches the package it came from. Asserting
+# the composed image is the point: the Containerfile unit tests only assert the
+# text of the file, and the ordering bug they guard against is invisible there
+# once a reorder also rewrites the comments.
+[branding.rpm_overrides.fedora-logos]
+paths = [
+  "/usr/share/pixmaps/fedora-gdm-logo.png",
+  "/usr/share/pixmaps/fedora-logo.png",
+  "/usr/share/pixmaps/fedora-logo-small.png",
+  "/usr/share/pixmaps/fedora-logo-sprite.png",
+  "/usr/share/pixmaps/fedora_logo_med.png",
+  "/usr/share/pixmaps/fedora_whitelogo_med.png",
+  "/usr/share/pixmaps/system-logo-white.png",
+  "/usr/share/plymouth/themes/spinner/watermark.png",
+]
+
 [configuration]
 files = [
   "/etc/dconf/db/distro.d/01-bluefin-folders",
