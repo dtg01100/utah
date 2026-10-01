@@ -42,8 +42,12 @@ class BuildManifestTests(unittest.TestCase):
         # via UTAH_MANIFEST_OUT. cwd is forced to the repo root so any future
         # change that resolves paths relative to cwd keeps behaving the same
         # way it does inside a podman build (where cwd is the build context).
+        # Start from a minimal environment rather than os.environ: a host
+        # that exports VERSION or BUILD_COMMIT would otherwise leak into
+        # the fallback test and it would fail for reasons unrelated to the
+        # script. PATH is kept so the interpreter resolves its own tooling.
         env = {
-            **os.environ,
+            "PATH": os.environ.get("PATH", ""),
             **env,
             "UTAH_MANIFEST_OUT": str(self.out_dir / "build-manifest.json"),
         }

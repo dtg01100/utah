@@ -32,17 +32,21 @@ class BuildProvenanceContainerfileTests(unittest.TestCase):
             "Containerfile is missing ARG BUILD_COMMIT=unknown",
         )
 
-    def test_contains_package_image_sha_full_arg(self):
-        # Same logic as BUILD_COMMIT: required ARG, default of `unknown`
-        # so a missed build-arg is loud, not silent.
+    def test_package_image_sha_arg_is_redeclared_bare(self):
+        # Bare (no default) re-declaration in the final stage is what makes
+        # the label inherit the global pin on any build, including a plain
+        # `podman build` that passes no build-args. A default here would
+        # ship `unknown` next to a manifest carrying the real digest.
         self.assertIsNotNone(
             re.search(
-                r"^ARG PACKAGE_IMAGE_SHA_FULL=unknown\s*$",
+                r"^ARG PACKAGE_IMAGE_SHA\s*$",
                 self.text,
                 re.MULTILINE,
             ),
-            "Containerfile is missing ARG PACKAGE_IMAGE_SHA_FULL=unknown",
+            "Containerfile is missing the bare ARG PACKAGE_IMAGE_SHA "
+            "re-declaration in the final stage",
         )
+        self.assertNotIn("PACKAGE_IMAGE_SHA_FULL", self.text)
 
     def test_revision_label_uses_build_commit(self):
         # org.opencontainers.image.revision is the label post-mortems read
@@ -57,9 +61,10 @@ class BuildProvenanceContainerfileTests(unittest.TestCase):
         # The package image digest label is the entire point of #371 -- a
         # build that resolves the wrong PACKAGE_IMAGE_SHA must show up in
         # `podman inspect` without having to diff installed RPM versions.
+        # It reads the same ARG the sidecar is fed, so the two cannot skew.
         self.assertIn(
             'LABEL io.projectbluefin.utah.package_image_sha="'
-            '${PACKAGE_IMAGE_SHA_FULL}"',
+            '${PACKAGE_IMAGE_SHA}"',
             self.text,
         )
 

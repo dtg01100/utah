@@ -173,7 +173,7 @@ The dispatched build that consumed a stale `PACKAGE_IMAGE_SHA` under a
 post-bump `BUILD_ID` (#371) is the failure mode every shipped image carries
 the provenance to catch: `org.opencontainers.image.revision` and
 `io.projectbluefin.utah.package_image_sha` on the OCI manifest, and the
-same four fields plus `package_image` and `version` in
+same two fields plus `package_image` and `version` in
 `/usr/share/utah/build-manifest.json`. A future sync workflow that pins
 its dispatched build to the SHA it just pushed will not eliminate the
 race entirely; the labels are what makes the surviving drift loud.

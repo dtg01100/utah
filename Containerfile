@@ -171,9 +171,10 @@ ARG SHA_HEAD_SHORT=unknown
 # Re-declared bare (no default) because Containerfile ARG scope is per-stage:
 # the global ARGs (lines 5-6) are visible to FROM lines but not to RUN/label
 # commands in the final stage without a bare re-declaration. Bare ARGs
-# inherit the global value at build time, so this stays in lock-step with
-# the canonical pin (#371). The build-manifest sidecar reads both names
-# literally.
+# inherit the global value at build time, so the label and the sidecar carry
+# the same digest FROM ${PACKAGE_IMAGE_REF} resolved, with or without a
+# --build-arg, and a plain `podman build` cannot ship a label that disagrees
+# with the packages it installed (#371).
 ARG PACKAGE_IMAGE
 ARG PACKAGE_IMAGE_SHA
 # Full Utah commit SHA the build was dispatched against. Captured here as a
@@ -182,11 +183,6 @@ ARG PACKAGE_IMAGE_SHA
 # pinned it, instead of inferring from BUILD_ID (#371). build-ghcr passes
 # `git rev-parse HEAD`; local builds fall back to the same plumbing.
 ARG BUILD_COMMIT=unknown
-# The PACKAGE_IMAGE_SHA the runner actually consumed. Read at build time by
-# the build-ghcr Justfile and written both as a label and into the build
-# manifest, so an image that drifts from its Containerfile pin is one
-# `podman inspect` away (#371).
-ARG PACKAGE_IMAGE_SHA_FULL=unknown
 # Production images keep SSH closed; local VM diagnostics can opt in with
 # ENABLE_SSHD=1, following tunaOS's debug-image convention.
 ARG ENABLE_SSHD=0
@@ -271,15 +267,15 @@ RUN --mount=type=bind,from=packages,source=/repository,target=/etc/utah-packages
 # with no tmpfiles.d entry. This must run after the last package install, which
 # is the NVIDIA and OGC step, not after the main transaction. The lint that
 # checks the result runs in the same layer: nothing can change between the two.
-# The home-label check runs first: clean-stage removes the utah-* helpers.
+# The home-label check runs first so a relabelling failure aborts before the
+# cleanup erases the build residue that explains it.
 #
-# The build-manifest write precedes clean-stage so the JSON sidecar is
-# produced while the helper is still on disk. It captures BUILD_COMMIT and
-# PACKAGE_IMAGE_SHA so a future post-mortem can verify the image matches the
-# commit the dispatch claimed (#371); clean-stage does not currently remove
-# the helper (clean-stage.sh only clears /var, /run, /tmp, /utah-cache), so
-# the published image carries /usr/local/libexec/utah-write-build-manifest
-# alongside the JSON.
+# The build-manifest write also precedes clean-stage, for ordering only: it
+# captures BUILD_COMMIT and PACKAGE_IMAGE_SHA so a future post-mortem can
+# verify the image matches the commit the dispatch claimed (#371).
+# clean-stage.sh clears only /var, /run, /tmp and /utah-cache, so the
+# published image keeps both the JSON and the
+# /usr/local/libexec/utah-* helpers that wrote it.
 RUN /usr/local/libexec/utah-fix-home-labels --check && \
     BUILD_COMMIT="${BUILD_COMMIT}" \
     PACKAGE_IMAGE="${PACKAGE_IMAGE}" \
@@ -295,11 +291,12 @@ LABEL org.opencontainers.image.source="https://github.com/projectbluefin/utah"
 LABEL org.opencontainers.image.vendor="${IMAGE_VENDOR}"
 LABEL org.opencontainers.image.version="${VERSION}"
 LABEL org.opencontainers.image.revision="${BUILD_COMMIT}"
-# Records the package repository digest the transaction resolved against. The
-# ARG above is the same string PACKAGE_IMAGE_REF resolves to; recording it as
-# a label makes a stale-ref build (one whose checkout lagged the dispatch,
-# #371) visible from `podman inspect` instead of from installed RPM versions.
-LABEL io.projectbluefin.utah.package_image_sha="${PACKAGE_IMAGE_SHA_FULL}"
+# Records the package repository digest the transaction resolved against. This
+# is the same ARG the FROM ${PACKAGE_IMAGE_REF} line consumed and the same one
+# the sidecar is fed, so label and manifest cannot disagree; it makes a
+# stale-ref build (one whose checkout lagged the dispatch, #371) visible from
+# `podman inspect` instead of from installed RPM versions.
+LABEL io.projectbluefin.utah.package_image_sha="${PACKAGE_IMAGE_SHA}"
 LABEL containers.bootc=1
 
 CMD ["/sbin/init"]
