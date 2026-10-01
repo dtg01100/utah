@@ -1,0 +1,70 @@
+#!/usr/bin/bash
+# utah-image-repo — Utah's image-name -> upstream GitHub repo resolver.
+#
+# Routes `utah*` to projectbluefin/utah; forwards every other call to
+# common's `/usr/libexec/ublue-image-repo`, which remains the authoritative
+# resolver for non-Utah image names. Without this shim, `ujust report` on
+# Utah falls through common's grammar and lands in projectbluefin/common
+# (projectbluefin/utah#446).
+#
+# Usage:
+#   utah-image-repo [--default REPO] [IMAGE_NAME] [IMAGE_TAG]
+#
+# Matches the argument grammar of /usr/libexec/ublue-image-repo so the
+# caller (bonedigger-report) does not need to know the shim exists; it
+# just sees the same single-source-of-truth resolver it always did.
+
+set -euo pipefail
+
+UBLUE_IMAGE_REPO="/usr/libexec/ublue-image-repo"
+
+DEFAULT=""
+NAME=""
+TAG=""
+
+while (($# > 0)); do
+    case "$1" in
+        --default)
+            if (($# < 2)); then
+                printf 'usage: utah-image-repo [--default REPO] [IMAGE_NAME] [IMAGE_TAG]\n' >&2
+                exit 2
+            fi
+            DEFAULT="$2"
+            shift 2
+            ;;
+        --default=*)
+            DEFAULT="${1#--default=}"
+            shift
+            ;;
+        --)
+            shift
+            break
+            ;;
+        *)
+            if [[ -z "$NAME" ]]; then
+                NAME="$1"
+            elif [[ -z "$TAG" ]]; then
+                TAG="$1"
+            fi
+            shift
+            ;;
+    esac
+done
+
+if [[ "$NAME" == utah* ]]; then
+    printf '%s\n' "projectbluefin/utah"
+    exit 0
+fi
+
+# Forward to common's authoritative resolver, preserving the caller's
+# --default so an unrecognised name still falls back to that, not to
+# common's hard-coded default.
+if [[ -n "$DEFAULT" && -n "$TAG" ]]; then
+    exec "$UBLUE_IMAGE_REPO" --default "$DEFAULT" "$NAME" "$TAG"
+elif [[ -n "$DEFAULT" ]]; then
+    exec "$UBLUE_IMAGE_REPO" --default "$DEFAULT" "$NAME"
+elif [[ -n "$TAG" ]]; then
+    exec "$UBLUE_IMAGE_REPO" "$NAME" "$TAG"
+else
+    exec "$UBLUE_IMAGE_REPO" "$NAME"
+fi

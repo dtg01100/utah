@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
@@ -153,6 +154,34 @@ class UjustOverridesTests(unittest.TestCase):
         self.assertIn("https://github.com/projectbluefin/utah/issues/395", result.stderr)
         self.assertEqual(self.calls(), "")
 
+    def test_report_override_runs_bonedigger_with_utah_image_repo(self):
+        # projectbluefin/utah#446: ujust report on Utah was falling through
+        # common's routing grammar and landing in projectbluefin/common.
+        # Utah overrides `report` in 60-custom.just so bonedigger-report
+        # routes through the local utah-image-repo shim. Static read of
+        # the recipe body is the assertion; the dynamic routing behaviour
+        # is covered by tests/test_utah_image_repo.py.
+        text = RECIPES.read_text()
+        match = re.search(
+            r"report \*args:\s*\n"
+            r"(?P<body>(?:[ \t].*\n|\s*\\\s*\n)+)",
+            text,
+        )
+        self.assertIsNotNone(
+            match,
+            "ujust report recipe must exist with a multi-line body",
+        )
+        body = match.group("body")
+        self.assertIn(
+            'UBLUE_IMAGE_REPO_BIN="/usr/local/libexec/utah-image-repo"',
+            body,
+            "ujust report must set UBLUE_IMAGE_REPO_BIN to the Utah shim",
+        )
+        self.assertIn(
+            "/usr/libexec/bonedigger-report",
+            body,
+            "ujust report must still call bonedigger-report",
+        )
 
 if __name__ == "__main__":
     unittest.main()
