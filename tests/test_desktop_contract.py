@@ -531,9 +531,10 @@ class FwupdRefreshDropInTests(unittest.TestCase):
 
     The drop-in at
     system_files/shared/usr/lib/systemd/system/fwupd-refresh.service.d/
-    binds the unit to a static user (fwupd-refresh) so the migration code
-    in systemd never runs. The user is allocated by the sysusers.d fragment
-    at system_files/shared/usr/lib/sysusers.d/utah-fwupd-refresh.conf.
+    binds the unit to a static user (fwupd-refresh) AND sets DynamicUser=no
+    so the migration code in systemd is skipped. The user is allocated by
+    the sysusers.d fragment at
+    system_files/shared/usr/lib/sysusers.d/utah-fwupd-refresh.conf.
     """
 
     DROP_IN = ROOT / "system_files/shared/usr/lib/systemd/system/fwupd-refresh.service.d/10-utah-fwupd-refresh-user.conf"
@@ -548,18 +549,22 @@ class FwupdRefreshDropInTests(unittest.TestCase):
         self.assertIn("[Service]", text)
         self.assertIn("User=fwupd-refresh", text)
         self.assertIn("Group=fwupd-refresh", text)
-        # systemd rejects the combination DynamicUser= alongside a fixed
-        # User=. Only directive lines count; comments explaining the bug
-        # may still mention DynamicUser=yes for context.
+        # DynamicUser=no is the load-bearing directive: systemd's
+        # exec_directory_is_private() gates the pre-existing-public ->
+        # /var/cache/private migration on context->dynamic_user alone,
+        # not on whether User= is set (User= + DynamicUser=yes is a
+        # legal systemd.exec(5) combination). Without DynamicUser=no the
+        # migration code still runs and the unit still fails the same
+        # way. Comments may still mention DynamicUser=yes for context,
+        # but only directive lines (no leading '#') are checked here.
         directive_lines = [
             line for line in text.splitlines()
             if line and not line.lstrip().startswith("#")
         ]
-        for line in directive_lines:
-            self.assertFalse(
-                line.lstrip().startswith("DynamicUser="),
-                f"drop-in must not redeclare DynamicUser= as a directive: {line!r}",
-            )
+        self.assertTrue(
+            any(line.strip() == "DynamicUser=no" for line in directive_lines),
+            "drop-in must set DynamicUser=no so the migration code is skipped",
+        )
 
     def test_drop_in_documents_the_bug(self):
         text = self.DROP_IN.read_text()
