@@ -16,10 +16,25 @@ default:
 # under tests/ that holds test modules. Bare `unittest discover` rooted at
 # tests/ skipped subdirectories such as tests/unit/ silently -- it reported
 # OK whether the tests there passed, failed, or never ran.
+#
+# The third-party modules the suite needs are declared in
+# tests/requirements.txt, not installed silently here. A quiet `pip install ||
+# true` hid its own failure: the modules stayed missing and the suite reported
+# 46 errors that read like regressions instead of one message naming the
+# dependency.
 test:
     #!/usr/bin/env bash
     set -euo pipefail
-    pip install --quiet pyyaml 2>/dev/null || true
+    missing=()
+    for module in yaml jsonschema; do
+        python3 -c "import ${module}" 2>/dev/null || missing+=("${module}")
+    done
+    if [ ${#missing[@]} -gt 0 ]; then
+        echo "host test dependencies missing: ${missing[*]}" >&2
+        echo "they are declared in tests/requirements.txt; install them with:" >&2
+        echo "    pip install -r tests/requirements.txt" >&2
+        exit 1
+    fi
     python3 tests/run_suite.py
 
 check:
@@ -174,22 +189,28 @@ check-desktop-contract image_ref="localhost/utah:testing":
 # three slow dnf resolves to reach the same answer.
 #
 # Resolves dependencies on the pinned base and package image. Needs podman and network.
+# Then probes each [unavailable] entry the same way: a blocked entry that now
+# resolves is stale parity debt, and the base image is already cached.
 check-repos:
     #!/usr/bin/env bash
     set -uo pipefail
-    for attempt in 1 2 3; do
-      python3 scripts/check-repo-availability.py packages/bluefin.toml packages/utah.toml
-      status=$?
-      if [ "$status" -ne 125 ]; then
-        exit "$status"
-      fi
-      echo "check-repos: container engine could not run (exit 125), attempt ${attempt}/3" >&2
-      if [ "$attempt" -ne 3 ]; then
-        sleep $(( attempt * 15 ))
-      fi
-    done
-    echo "check-repos: giving up after 3 engine failures; the registry is not serving the pinned image" >&2
-    exit 125
+    gate() {
+      for attempt in 1 2 3; do
+        python3 scripts/check-repo-availability.py "$@"
+        status=$?
+        if [ "$status" -ne 125 ]; then
+          return "$status"
+        fi
+        echo "check-repos: container engine could not run (exit 125), attempt ${attempt}/3" >&2
+        if [ "$attempt" -ne 3 ]; then
+          sleep $(( attempt * 15 ))
+        fi
+      done
+      echo "check-repos: giving up after 3 engine failures; the registry is not serving the pinned image" >&2
+      return 125
+    }
+    gate packages/bluefin.toml packages/utah.toml || exit "$?"
+    gate --check-unavailable packages/bluefin.toml packages/utah.toml
 
 # packages/bluefin.toml is a verbatim copy of Bluefin's base.toml pinned to
 # the revision in packages/.bluefin-parity-ref.  Drift here is a parity bug,
@@ -231,6 +252,62 @@ baselines bluefin="ghcr.io/ublue-os/bluefin:stable" utah="ghcr.io/projectbluefin
       done)
     python3 scripts/image-baseline.py dakota "$run" baselines/dakota
     python3 scripts/image-baseline.py gap
+
+# Partition every Bluefin package Utah lacks by where it could come from:
+# hummingbird-available / factory-built / nowhere. The 2026-09-30 bare-metal
+# audit (#382) ran this pipeline by hand against the OCI image feeds. This
+# is the same pipeline as a single recipe so a future audit -- or a
+# scheduled drift report -- does not reinvent the manual sequence.
+#
+# Pulls the pinned factory OCI repodata (Containerfile PACKAGE_IMAGE_SHA)
+# and Hummingbird's primary.xml directly. No podman run is started; the
+# audit is a static-repodata read against the same pinned inputs
+# scripts/check-repo-availability.py mounts for `just check-repos`, so
+# the verdict and the install transaction cannot disagree on what the
+# repositories offer.
+#
+#   just audit-bluefin-parity                # partition + print, do not write
+#   just audit-bluefin-parity --write        # record the new baseline after printing
+#   just audit-bluefin-parity --check        # compare against the recorded baseline
+#
+# Pass `--ref=<sha|tag|branch>` to audit against a Bluefin revision that
+# is not yet committed to packages/.bluefin-parity-ref. The default is the
+# pinned SHA in that file.
+#
+# Args are interpolated into the body with `{{args}}`, not read from `$@`: a
+# `just` shebang recipe receives no positional parameters (`$# = 0`), so a
+# `"$@"` loop never sees the flags. Value flags use the `--key=value` form
+# because that is all the forwarding script's `case` matches; the flags are
+# re-parsed there.
+audit-bluefin-parity *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    subcommand="run"
+    forward=()
+    for arg in {{args}}; do
+      case "$arg" in
+        --check) subcommand="check" ;;
+        --write) forward+=(--write) ;;
+        --ref=*) forward+=("$arg") ;;
+        *) echo "audit-bluefin-parity: unknown argument: $arg" >&2; exit 64 ;;
+      esac
+    done
+    python3 scripts/audit-bluefin-parity.py "$subcommand" "${forward[@]+"${forward[@]}"}"
+
+# Gate: fail when an audit partition grew past baselines/audit-baseline.json.
+# The script also fails on a missing baseline; first run is `just
+# audit-bluefin-parity --write` to record the starting state of the debt.
+check-audit-parity *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    forward=()
+    for arg in {{args}}; do
+      case "$arg" in
+        --ref=*) forward+=("$arg") ;;
+        *) echo "check-audit-parity: unknown argument: $arg" >&2; exit 64 ;;
+      esac
+    done
+    python3 scripts/audit-bluefin-parity.py check "${forward[@]+"${forward[@]}"}"
 
 image_name base_name stream flavor:
     @python3 scripts/flavors.py image "{{ flavor }}"

@@ -302,7 +302,7 @@ issue = "#263"
 [package.zram-generator]
 status = "planned"
 area = "hardware-power"
-issue = "#263"
+issue = "#384"
 
 [package.lm_sensors]
 status = "planned"

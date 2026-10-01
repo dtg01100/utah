@@ -1,7 +1,7 @@
 ---
 name: package-contract
 version: "1.1"
-last_updated: "2026-09-30"
+last_updated: "2026-10-01"
 id: package-contract
 one_line_purpose: Maintain Bluefin package parity and Utah's overlay manifest.
 entry_point: docs/skills/package-contract.md
@@ -56,6 +56,16 @@ policy for changing them.
   - `[services]` — desktop services Bluefin adds on top of the server base.
   - `[unavailable]` — Bluefin contract packages none of Utah's repositories
     provide.
+
+## Wi-Fi documentation currency
+
+Wi-Fi needs both `[hardware]` firmware and the `[parity]` userspace stack:
+`NetworkManager-wifi`, `wpa_supplicant`, `wireless-regdb` and `iw`. These names
+are now in the install contract; the former factory dependency blocker is
+not a current gap. When a dependency lands, update both the nearby manifest
+comments and the README gap list. Keep package availability separate from
+runtime evidence: only testing device detection and association on the target
+hardware establishes that its radio works.
 
 ## [unavailable] rules
 
@@ -127,6 +137,24 @@ drifted once, so a contract package was installed and never verified
 the verifier is only the off-image `--check` fallback and asserts nothing
 about installation.
 
+The install transaction follows a strict execution sequence tested in
+`tests/test_package_install.py`:
+1. **Contract record**: The resolved contract packages (excluding `[build]`
+   tooling and `[unavailable]` packages) are written to
+   `/usr/share/utah/contract.txt`. If the path is unwritable, the script warns
+   and continues (fails open).
+2. **Install**: DNF runs with `--disablerepo=*`, enables only marked
+   `# utah-install: true` repositories in ascending priority order, excludes
+   `PackageKit*`, and installs the contract plus `[build]` tooling.
+3. **Mark user**: `dnf mark user` marks all installed contract packages and
+   build dependencies as user-installed before excluded package removal. This
+   prevents DNF autoremove cascades from uninstalling contract packages (such as
+   `xdg-desktop-portal-gnome`).
+4. **Excluded removal**: `rpm -qa` is queried for packages declared in
+   `[excluded]`. Only those actually present are removed with
+   `dnf remove --no-autoremove`. Position after the subcommand is mandatory
+   for DNF5 compatibility.
+
 On NVIDIA flavors (`IMAGE_FLAVOR=nvidia` or `nvidia-gaming`),
 `scripts/verify-rpm-contract.py` also asserts that the kernel module
 (`extra/nvidia/nvidia.ko`) is present for every bootable kernel in the image and
@@ -177,9 +205,9 @@ signing images from the unreviewed upstream set,
 which is what makes `just check-repos` catch a missing overlay source on the
 bump PR itself (see `docs/skills/ci-workflows.md`).
 
-Current counts, per the README "Package parity" section: 57 Bluefin contract
-packages installed, 85 Utah additions (GNOME 51, base-image parity, device
-firmware, desktop services), 10 genuinely unavailable. `scripts/check-doc-counts.py` (part of
+Current counts, per the README "Package parity" section: 61 Bluefin contract
+packages installed, 86 Utah additions (GNOME 51, base-image parity, device
+firmware, desktop services), 6 genuinely unavailable. `scripts/check-doc-counts.py` (part of
 `just check`) recomputes these from the manifests and fails if either
 document drifts from `site/data/packages.json`.
 
@@ -199,12 +227,100 @@ assert a package in every section reaches the install set and is counted under
 its own heading, so a section wired into one place and not another fails the
 suite rather than shipping quietly.
 
+## Re-runnable parity audit (issue #402)
+
+`scripts/image-baseline.py` measures what files Bluefin ships that Utah
+does not (`baselines/GAP.md`). It does not say *where* the missing name
+could come from, only that it is missing. That gap was the 2026-09-30
+bare-metal audit (#382): `rpm -qa` both images, `comm` the difference,
+then partition each gap name by which repository could supply it.
+
+`scripts/audit-bluefin-parity.py` is the re-runnable version of that
+pipeline. Every name Bluefin ships that Utah does not install (and does
+not list in `[unavailable]`) lands in one of three partitions:
+
+- **hummingbird-available** — resolves against Hummingbird today. The
+  smallest move to close the gap is to add the name to `[parity]`
+  (or `[hardware]`, etc.); the manifest is the only thing in the way.
+- **factory-built** — absent from Hummingbird, present in the pinned
+  factory repository. The factory already builds what we need; this is a
+  manifest gap, not a factory gap.
+- **nowhere** — neither repository provides it. A factory recipe must
+  land first; until then, the name belongs in `[unavailable]` with a
+  tracking issue.
+
+The script reads the same pinned inputs as `just check-repos` (the
+Containerfile `PACKAGE_IMAGE_SHA` for the factory OCI; the baseurl in
+`packages/hummingbird.repo` for Hummingbird) and parses the
+`primary.xml` from each, so the verdict and the install transaction
+cannot disagree on what the repositories offer. No podman run is
+involved — the audit is a static repodata read.
+
+The audit writes `baselines/audit-baseline.json` (only when the
+`--write` flag is passed; the default is report-only, matching the
+2026-09-30 audit's "look before you leap" posture). The check
+subcommand compares the current run to the baseline and exits nonzero when
+a partition grows past the recorded state; a name moving from
+`factory-built` to `hummingbird-available` is a Hummingbird rebuild
+landing and is silent. A name disappearing from the baseline (an operator
+moved it into `[parity]` and closed the gap) is silent too — only new
+names that did not exist anywhere in the baseline trigger the gate.
+
+Bootstrap is a one-time manual command: on a fresh checkout where
+`baselines/audit-baseline.json` is missing, `just check-audit-parity`
+exits 2 with a clear message; running `just audit-bluefin-parity --write`
+once commits the starting state of the debt and turns the gate on.
+Subsequent runs gate against that baseline.
+
+```bash
+just audit-bluefin-parity              # partition + print, do not write
+just audit-bluefin-parity --write      # record the new baseline
+just check-audit-parity                # fail on partition growth
+just check-audit-parity --ref=HEAD     # audit against an unpinned Bluefin ref
+```
+
+The recipes read their flags from a `*args` parameter that is interpolated
+into the shebang body with `{{args}}`. A `just` shebang recipe receives no
+positional parameters (`$# = 0`), so a `"$@"` loop there is a silent no-op:
+the flags never reach the script and the recipe falls back to report-only
+`run`. Value flags use the `--key=value` form, which is what the recipe's
+`case` re-parses.
+
+The audit needs network (the factory OCI metadata layer and Hummingbird's
+`repodata/`); it is a sibling of `just check-repos`, not part of `just
+check`, which stays offline.
+
 ## Verification
 
 ```bash
 just check-parity
 just check-repos
+just check-audit-parity
 python3 scripts/install-packages.py --check packages/bluefin.toml
 python3 scripts/verify-rpm-contract.py --check packages/bluefin.toml
 python3 scripts/check-doc-counts.py
 ```
+
+## Runtime ujust dependencies
+
+Common's `00-entry.just` imports `60-custom.just` after the shared recipes
+with duplicate recipes enabled, but earlier imports win at equal depth.
+The Containerfile preserves Common's entry point as `00-common.just` before
+installing Utah's local overlay. Utah's `00-entry.just` imports that file and
+`60-custom.just` at the same depth, so Utah's custom recipes are shallower
+than Common's defaults and take precedence. Common still supplies the default
+command and unrelated recipes. Keep these overrides small and test them through
+`just`, including import precedence, when changing Common's pin or runtime
+dependencies. The required Common import deliberately fails if composition
+forgets to preserve the original entry point.
+
+For #394, `device-info` prints a local report when `fpaste` is missing and
+only uploads after confirmation when it is available. Its temporary report is
+private and removed on exit. `changelogs` keeps Common's image/repository
+selection but prints Markdown directly when `glow` is absent; HTTP and parsing
+errors must remain failures. Enrollment reports the unsupported capability
+without running `sudo` or `mokutil`: Utah has no module-signing certificate,
+and shipping one without signing the modules would not fix Secure Boot.
+Signing and enrollment remain tracked by #395. Common's guarded
+`check-idle-power-draw` stays unchanged until the factory supplies `powerstat`.
+These fallbacks do not add packages or enable Fedora runtime repositories.

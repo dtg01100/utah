@@ -1,0 +1,69 @@
+# Utah's entry point imports these at a shallower depth than Common's recipes.
+
+# Show device diagnostics locally; optionally upload when fpaste is installed
+[group('System')]
+device-info:
+    #!/usr/bin/bash
+    set -euo pipefail
+    report="$(mktemp "${TMPDIR:-/tmp}/utah-device-info.XXXXXX")"
+    trap 'rm -f "$report"' EXIT
+    {
+        echo '--#--# bootc status --verbose:'
+        bootc status --verbose
+        if command -v fpaste >/dev/null; then
+            echo '--#--# fpaste --sysinfo --printonly:'
+            fpaste --sysinfo --printonly
+        else
+            echo '--#--# OS:'
+            cat /etc/os-release
+            echo '--#--# Kernel:'
+            uname -a
+            echo '--#--# CPU:'
+            lscpu
+            echo '--#--# Block devices:'
+            lsblk
+            echo '--#--# Memory:'
+            free -h
+        fi
+        echo '--#--# flatpak list --columns=application,version,options:'
+        flatpak list --columns=application,version,options
+    } > "$report"
+    cat "$report"
+    if ! command -v fpaste >/dev/null; then
+        echo 'fpaste is unavailable on Utah; diagnostics are shown above. Review them before sharing.' >&2
+    elif gum confirm 'Submit this information to the CentOS pastebin?'; then
+        fpaste < "$report"
+    fi
+
+# Show release notes, using plain text when glow is unavailable
+changelogs:
+    #!/usr/bin/bash
+    set -euo pipefail
+    IMAGE_INFO_FILE="${IMAGE_INFO_FILE:-/usr/share/ublue-os/image-info.json}"
+    TAG="$(jq -r '.["image-tag"]' < "$IMAGE_INFO_FILE")"
+    IMAGE_NAME="$(jq -r '.["image-name"] // empty' < "$IMAGE_INFO_FILE")"
+    REPO="$("${UBLUE_IMAGE_REPO_BIN:-/usr/libexec/ublue-image-repo}" \
+        --default 'projectbluefin/bluefin' "$IMAGE_NAME" "$TAG")"
+    CONTENT=''
+    if [[ "$TAG" =~ gts$|stable$|^lts ]]; then
+        DATE="$(grep -oP 'OSTREE_VERSION=.*\d{2}\.\K\d{8}[.0-9]*' /etc/os-release || true)"
+        CONTENT="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases" | \
+            jq -r --arg tag "${TAG}-${DATE}" '.[] | select(.tag_name == $tag) | .body // empty')"
+    fi
+    if [[ -z "$CONTENT" ]]; then
+        echo 'WARN: Could not find a release specific to your image' >&2
+        CONTENT="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | jq -er '.body // empty')"
+    fi
+    if command -v glow >/dev/null; then
+        printf '%s\n' "$CONTENT" | glow -p
+    else
+        printf '%s\n' "$CONTENT"
+    fi
+
+# Explain Utah's pending module-signing support without changing MOK state
+[group('System')]
+enroll-secure-boot-key:
+    #!/usr/bin/bash
+    echo 'Utah does not yet ship a kernel-module signing key to enroll.' >&2
+    echo 'Secure Boot module signing and enrollment are tracked at https://github.com/projectbluefin/utah/issues/395' >&2
+    exit 1

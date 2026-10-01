@@ -1,7 +1,7 @@
 ---
 name: ci-workflows
 version: "1.1"
-last_updated: "2026-09-30"
+last_updated: "2026-10-01"
 id: ci-workflows
 one_line_purpose: Navigate Utah's build, promote, and sync workflow topology.
 entry_point: docs/skills/ci-workflows.md
@@ -14,7 +14,7 @@ tags: [ci, workflows, actions, promotion]
 description: >-
   build.yml contract gate, kernel-cache job, main/kernel matrix split,
   promote-testing-to-main, sync-main-to-testing and update-bluefin-parity,
-  actions@v1 delegation.
+  actions@v1 delegation, weekly factory-pin bump.
   Use when changing .github/workflows/ or debugging a red run.
 metadata:
   type: reference
@@ -22,7 +22,7 @@ metadata:
 
 # CI Workflows
 
-Eight workflows, all thin callers into `projectbluefin/actions@v1` reusables
+Nine workflows, all thin callers into `projectbluefin/actions@v1` reusables
 or pinned third-party actions:
 
 - `.github/workflows/build.yml` -- pull requests, pushes to `testing`, a
@@ -77,6 +77,10 @@ or pinned third-party actions:
   no dispatch step, so no checks start on it by themselves; once CI runs on
   it (a maintainer push, or closing and reopening it), `just check` fails it
   if a Bluefin package Utah lacks is not triaged in `baselines/triage.toml`.
+- `.github/workflows/bump-factory-pin.yml` -- Mondays 07:00 UTC and manual
+  dispatch. Resolves the `utah-packages` digest and opens a one-line pull
+  request against `testing` that bumps `ARG PACKAGE_IMAGE_SHA`; see
+  "`bump-factory-pin`" below.
 
 CI delegates builds, vulnerability reporting, keyless signatures, provenance,
 and caching to `projectbluefin/actions@v1` (originated as a `docs/building.md`
@@ -294,6 +298,66 @@ the ISO is written. Successful post-fix E2E run `35469913325` measured 3.9G
 headroom for the largest flavor. The guard lives in the build script, so it
 holds for every caller (local `just iso`, the CI LUKS job, and any deliberate
 rerun), not just one workflow.
+
+## Release and branch cadence, and the factory pin
+
+The cadence is RFC'd in #336. What runs today:
+
+- `testing` is the integration branch. `build.yml` runs on every pull request
+  and on every push to `testing`; `main` receives the promotion merge from
+  `promote-testing-to-main.yml` and nothing else. `sync-main-to-testing.yml`
+  carries the promotion back down nightly.
+- `:testing` advances per green build, not on a clock: the tags move in
+  `post-testing-e2e.yml`, after the LUKS ISO matrix and the production-ISO
+  composition both pass. `promote-testing-to-main.yml` is the daily 04:00 UTC
+  heartbeat, so `:testing` is at most a day behind `main` and `main` is at
+  most a day behind the newest validated `testing` image.
+- `:stable` moves in `execute-release.yml` on every promotion push to `main`,
+  gated by `run_release_gate: true` over `smoke,common`. A weekly promotion
+  rather than a per-promotion one is still an open question in #336 -- that is
+  a maintainer policy call, not a code gap, and nothing in this tree should
+  encode a guess at it.
+
+`bump-factory-pin` is the part of #336 that is code. `ARG PACKAGE_IMAGE_SHA`
+is the digest of `ghcr.io/projectbluefin/utah-packages`, the RPM repository
+every image installs from, and until this tool existed nothing revved it: the
+factory published GNOME 51 finals and the pin kept serving the previous digest
+until a human noticed. `scripts/bump-factory-pin.py` resolves the tag through
+the registry's own manifest endpoint, reading `Docker-Content-Digest` off the
+response -- anonymous bearer token, no skopeo install, no credential in the
+log -- and rewrites one line of the Containerfile.
+
+The rewrite is deliberately timid, and `tests/test_bump_factory_pin.py` pins
+why: it refuses a pin it could not parse, refuses a `PACKAGE_IMAGE_REF` that
+does not compose from `PACKAGE_IMAGE`/`PACKAGE_IMAGE_SHA` (a bump that would
+never reach the build), and replaces exactly one line. Its three modes are
+`--print` (resolve and report, write nothing), `--check` (exit non-zero when
+the pin is stale, write nothing), and the default (rewrite), plus `--digest` to
+take a digest resolved by another job. The suite is offline by default; the one
+test that talks to the registry runs only with `UTAH_NETWORK_TESTS=1`.
+
+The schedule is `.github/workflows/bump-factory-pin.yml`: Mondays 07:00 UTC and
+on demand, a read-only resolve job followed by a one-line pull request against
+`testing` opened with `peter-evans/create-pull-request` -- the same mechanism
+the ISO documentation PR already uses, under the same never-merge rule. Both
+jobs check out `testing` once and run the script from that checkout, so a
+`workflow_dispatch` fired before `scripts/bump-factory-pin.py` has reached
+`testing` fails on the missing file: wait for the sync, or dispatch from a ref
+that already carries the script.
+
+That pull request arrives with no checks on it. `create-pull-request` authors
+it as `github-actions[bot]` using the default `GITHUB_TOKEN`, and GitHub does
+not fire `on: pull_request` workflows for that token; this repository holds no
+App or PAT credential to author it with instead. The build matrix is therefore
+a manual step -- push an empty commit to `automation/factory-pin`, or close and
+reopen the pull request, and `build.yml` runs. An empty check list on one of
+these is not a passing build.
+
+Renovate is not the mechanism here because the pin is an `ARG` indirection, not
+a `FROM image@sha256:` -- the built-in dockerfile manager cannot see it, and
+the org custom manager only covers `image-versions.yml`. A future
+`image-versions.yml` in this repository would make that a duplicate; do not
+add one without retiring this workflow.
 
 ## Verification
 
