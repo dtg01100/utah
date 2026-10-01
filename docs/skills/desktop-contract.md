@@ -148,8 +148,9 @@ Hummingbird builds fwupd with `-Dsystemd_unit_user=""`, which expands the
 `@user@` template in `data/motd/fwupd-refresh.service.in` to `DynamicUser=yes`.
 Combined with the unit's `CacheDirectory=fwupdmgr`, every boot triggers
 systemd's pre-existing-public → `/var/cache/private/fwupdmgr` migration; in
-this bootc image the rename returns `EPERM`, the unit exits 1, and firmware
-metadata never refreshes.
+this bootc image the rename returns `EACCES` (a policy denial on `/var/cache`,
+not a plain-ownership problem), the unit exits 1, and firmware metadata never
+refreshes.
 
 The fix pins the unit to a static user so the migration code never runs.
 Both halves must land together — the drop-in alone leaves the service with no
@@ -157,18 +158,25 @@ user, and the sysusers fragment alone leaves the unit running as a dynamic
 user and still failing:
 
 - `system_files/shared/usr/lib/systemd/system/fwupd-refresh.service.d/10-utah-fwupd-refresh-user.conf`
-  sets `User=fwupd-refresh` / `Group=fwupd-refresh` / `DynamicUser=no`.
-  `DynamicUser=no` is the load-bearing directive: systemd's
-  `exec_directory_is_private()` (`src/core/execute.c`) gates the
-  pre-existing-public → `/var/cache/private` migration on
-  `context->dynamic_user` alone, not on whether `User=` is set, so without
-  it the migration still fires and the unit still fails the same way.
-  `User=` + `DynamicUser=yes` is a documented legal combination
-  (`systemd.exec(5)`), but it is not the combination we want here.
+  sets `User=fwupd-refresh` / `Group=fwupd-refresh` / `DynamicUser=no`,
+  plus the hardening directives that `DynamicUser=yes` would have implied
+  (`NoNewPrivileges=yes`, `PrivateTmp=yes`, `RemoveIPC=yes`,
+  `RestrictSUIDSGID=yes`, `ProtectSystem=strict`). `DynamicUser=no` is the
+  load-bearing directive: systemd's `exec_directory_is_private()`
+  (`src/core/execute.c`) gates the pre-existing-public → `/var/cache/private`
+  migration on `context->dynamic_user` alone, not on whether `User=` is set,
+  so without it the migration still fires and the unit still fails the same
+  way. `User=` + `DynamicUser=yes` is a documented legal combination
+  (`systemd.exec(5)`), but it is not the combination we want here. The user
+  name `fwupd-refresh` is load-bearing: upstream
+  `policy/org.freedesktop.fwupd.rules` grants `refresh-remote` /
+  `get-remotes` to `subject.user == "fwupd-refresh"` unconditionally, so
+  renaming the user would break refresh at the polkit layer.
 - `system_files/shared/usr/lib/sysusers.d/utah-fwupd-refresh.conf` allocates
   the user with auto-allocated UID/GID. systemd-sysusers runs from
   `systemd-sysusers.service` before `local-fs.target`, so by the time
-  `fwupd-refresh.timer` fires the user exists.
+  `fwupd-refresh.timer` fires the user exists. `sysusers.d(5)` defaults
+  `HOME` to `/` when the HOME field is omitted.
 
 The daemon (`fwupd.service`) is unaffected: it runs as root with no
 `DynamicUser=` and uses `CacheDirectory=fwupd`, so its cache lives under

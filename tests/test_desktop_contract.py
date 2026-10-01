@@ -390,14 +390,16 @@ class FwupdRefreshDropInTests(unittest.TestCase):
     """fwupd-refresh.service ships with DynamicUser=yes and CacheDirectory=fwupdmgr
     on Fedora/Hummingbird. The combination triggers a pre-existing-public ->
     /var/cache/private migration at every boot; in this bootc image the
-    rename returns EPERM and the unit exits 1, so firmware metadata never
-    refreshes (#385).
+    rename returns EACCES (a policy denial on /var/cache, not a plain-ownership
+    problem) and the unit exits 1, so firmware metadata never refreshes (#385).
 
     The drop-in at
     system_files/shared/usr/lib/systemd/system/fwupd-refresh.service.d/
     binds the unit to a static user (fwupd-refresh) AND sets DynamicUser=no
-    so the migration code in systemd is skipped. The user is allocated by
-    the sysusers.d fragment at
+    so the migration code in systemd is skipped, AND re-asserts the
+    hardening directives that DynamicUser=yes would have implied so the
+    drop-in preserves the same posture. The user is allocated by the
+    sysusers.d fragment at
     system_files/shared/usr/lib/sysusers.d/utah-fwupd-refresh.conf.
     """
 
@@ -469,6 +471,32 @@ class FwupdRefreshDropInTests(unittest.TestCase):
         sysusers_lines = self.SYSUSERS.read_text().splitlines()
         active = [line for line in sysusers_lines if line and not line.lstrip().startswith("#")]
         self.assertEqual(drop_in_user, active[0].split(None, 3)[1])
+
+    def test_drop_in_reasserts_dynamic_user_hardening(self):
+        # DynamicUser=yes implies NoNewPrivileges=yes, PrivateTmp=yes,
+        # RemoveIPC=yes, RestrictSUIDSGID=yes, and ProtectSystem=strict
+        # (systemd.exec(5); upstream's static-user branch in
+        # data/motd/meson.build bumps ProtectSystem=strict). DynamicUser=no
+        # does not imply them, so the drop-in must set them explicitly as
+        # directive lines (comments don't count) to preserve the same
+        # hardening posture.
+        text = self.DROP_IN.read_text()
+        directive_lines = [
+            line.strip() for line in text.splitlines()
+            if line and not line.lstrip().startswith("#")
+        ]
+        for required in (
+            "DynamicUser=no",
+            "NoNewPrivileges=yes",
+            "PrivateTmp=yes",
+            "RemoveIPC=yes",
+            "RestrictSUIDSGID=yes",
+            "ProtectSystem=strict",
+        ):
+            self.assertIn(
+                required, directive_lines,
+                f"drop-in must set {required} so the hardening posture is preserved",
+            )
 
 
 if __name__ == "__main__":
