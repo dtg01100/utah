@@ -142,6 +142,32 @@ gets its login. A mask is also the only lever that works here — the generator'
 `getty.target.wants` symlink is created in `/run` at boot, so it cannot be
 deleted at build time, and a preset entry alone would not stop it.
 
+### The fwupd-refresh unit pins a static user (#385)
+
+Hummingbird builds fwupd with `-Dsystemd_unit_user=""`, which expands the
+`@user@` template in `data/motd/fwupd-refresh.service.in` to `DynamicUser=yes`.
+Combined with the unit's `CacheDirectory=fwupdmgr`, every boot triggers
+systemd's pre-existing-public → `/var/cache/private/fwupdmgr` migration; in
+this bootc image the rename returns `EPERM`, the unit exits 1, and firmware
+metadata never refreshes.
+
+The fix pins the unit to a static user so the migration code never runs.
+Both halves must land together — the drop-in alone leaves the service with no
+user, and the sysusers fragment alone leaves the unit running as a dynamic
+user and still failing:
+
+- `system_files/shared/usr/lib/systemd/system/fwupd-refresh.service.d/10-utah-fwupd-refresh-user.conf`
+  sets `User=fwupd-refresh` / `Group=fwupd-refresh`.
+- `system_files/shared/usr/lib/sysusers.d/utah-fwupd-refresh.conf` allocates
+  the user with auto-allocated UID/GID. systemd-sysusers runs from
+  `systemd-sysusers.service` before `local-fs.target`, so by the time
+  `fwupd-refresh.timer` fires the user exists.
+
+The daemon (`fwupd.service`) is unaffected: it does not declare a
+`CacheDirectory=`. Firmware flashing still goes through the daemon, which
+keeps its existing dynamic-credential lifecycle. The pairing is asserted by
+`FwupdRefreshDropInTests` in `tests/test_desktop_contract.py`.
+
 ## The verifiers run twice
 
 The same verifier runs in the Containerfile and on demand, so a local image
