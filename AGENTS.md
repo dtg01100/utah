@@ -77,6 +77,25 @@ checks (`scripts/check-skill-frontmatter.sh`, `scripts/check-skill-index.sh`,
 - **`ENABLE_SSHD=1` is local-diagnostic only.** Never in a published image.
 - **Fedora repositories are never enabled at runtime.** Packages come from the
   pinned `utah-packages` OCI repository and Hummingbird's own repository.
+- **Every published image records its inputs.** The Containerfile writes
+  `org.opencontainers.image.revision` (the full Utah commit SHA the build
+  was invoked from) and `io.projectbluefin.utah.factory-digest` (the
+  `PACKAGE_IMAGE_SHA` the transaction resolved) as LABELs, and
+  `scripts/write-build-manifest.py` writes the same fields plus
+  `package_image` and `version` to
+  `/usr/share/utah/build-manifest.json`. A `workflow_dispatch` of the
+  testing build can race the sync push that triggered it (#371): the
+  GitHub API sometimes serves the pre-push commit at dispatch creation and
+  the build installs the pre-bump package set. `revision` is `GITHUB_SHA`,
+  the ref `actions/checkout` resolved, so it cannot on its own prove the
+  build disagreed with the dispatch's intended target — pinning the
+  dispatch to an explicit SHA is the fix for that, and is not yet
+  implemented. What the records do buy is the factory digest and commit a
+  published image was built from, readable from `podman inspect` or from
+  the sidecar on a running host instead of inferred from installed RPM
+  versions. Editing the labels or the build-manifest sidecar means keeping
+  both in sync; editing the captured SHA on the runner means keeping
+  `GITHUB_SHA`, `BUILD_COMMIT`, and `git rev-parse HEAD` in lockstep.
 
 ## What agents must not touch
 

@@ -368,6 +368,20 @@ build-ghcr base_name stream flavor kernel_pin="":
     else
       echo "Registry layer cache: off (${layer_cache_ref} is not readable from here)"
     fi
+    # Full Utah commit SHA this build was invoked from. `GITHUB_SHA` is
+    # the captured SHA on a GitHub Actions runner (push, PR, dispatch) and
+    # is the ref actions/checkout resolved; falling back to
+    # `git rev-parse HEAD` covers the local-only path and any future change
+    # to the runner env contract. The value lands in the
+    # org.opencontainers.image.revision label and the build-manifest
+    # sidecar so a published image names the commit it came from (#371).
+    build_commit="${GITHUB_SHA:-$(git rev-parse HEAD)}"
+    # The package repository digest the Containerfile pins reaches the
+    # label and /usr/share/utah/build-manifest.json through the bare
+    # `ARG PACKAGE_IMAGE_SHA` in the final stage, which inherits the global
+    # pin FROM ${PACKAGE_IMAGE_REF} already resolved. Not passing it as a
+    # build-arg is deliberate: the runner cannot be tricked into labelling
+    # an image with a digest it did not install.
     podman build \
       "${base_args[@]}" \
       "${layer_cache_args[@]}" \
@@ -377,6 +391,7 @@ build-ghcr base_name stream flavor kernel_pin="":
       --build-arg IMAGE_VENDOR={{ repo_organization }} \
       --build-arg VERSION="$version" \
       --build-arg SHA_HEAD_SHORT="$(git rev-parse --short HEAD)" \
+      --build-arg BUILD_COMMIT="$build_commit" \
       --build-arg ENABLE_SSHD="${ENABLE_SSHD:-0}" \
       --tag "localhost/$image_name:{{ stream }}" \
       --file Containerfile .
@@ -392,6 +407,13 @@ build-local stream="testing" package_image="localhost/utah-packages:local-merged
       exit 1
     }
     version="local-{{ stream }}-$(git rev-parse --short HEAD)"
+    # Mirror the provenance build-args from build-ghcr so a local
+    # `just build-local` image carries the same labels and the same
+    # /usr/share/utah/build-manifest.json as the CI artifact (#371).
+    # Unlike build-ghcr this overrides PACKAGE_IMAGE_REF, so the bare ARGs
+    # would otherwise inherit the ghcr pin the local image did not come
+    # from; both are passed explicitly to record what was really consumed.
+    package_image_sha="${PACKAGE_IMAGE_SHA:-unknown}"
     podman build \
       --build-arg PACKAGE_IMAGE_REF="$package_image" \
       --build-arg IMAGE_NAME="{{ image }}" \
@@ -400,6 +422,9 @@ build-local stream="testing" package_image="localhost/utah-packages:local-merged
       --build-arg IMAGE_VENDOR="{{ repo_organization }}" \
       --build-arg VERSION="$version" \
       --build-arg SHA_HEAD_SHORT="$(git rev-parse --short HEAD)" \
+      --build-arg BUILD_COMMIT="$(git rev-parse HEAD)" \
+      --build-arg PACKAGE_IMAGE="$package_image" \
+      --build-arg PACKAGE_IMAGE_SHA="$package_image_sha" \
       --build-arg ENABLE_SSHD="${ENABLE_SSHD:-1}" \
       --tag "localhost/{{ image }}:{{ stream }}" \
       --file Containerfile .

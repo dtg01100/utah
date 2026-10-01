@@ -87,6 +87,7 @@ COPY scripts/install-packages.py \
      scripts/verify-efi-chain.sh \
      scripts/fix-home-labels.sh \
      scripts/install-v4l2loopback.sh \
+     scripts/write-build-manifest.py \
      /tmp/utah-scripts/
 # Common publishes Bluefin artwork, desktop defaults, Brewfiles, and setup
 # hooks in a separate profile from its shared system files. Both are required:
@@ -124,7 +125,8 @@ RUN --mount=type=bind,from=v4l2loopback,source=/out,target=/tmp/utah-v4l2loopbac
                 mirror-shim.sh:utah-mirror-shim \
                 verify-efi-chain.sh:utah-verify-efi-chain \
                 fix-home-labels.sh:utah-fix-home-labels \
-                install-v4l2loopback.sh:utah-install-v4l2loopback; do \
+                install-v4l2loopback.sh:utah-install-v4l2loopback \
+                write-build-manifest.py:utah-write-build-manifest; do \
       install -Dm 0755 "/tmp/utah-scripts/${pair%%:*}" "/usr/local/libexec/${pair##*:}" || exit 1; \
     done && \
     cp -a /tmp/utah-common/. / && \
@@ -185,6 +187,25 @@ ARG IMAGE_FLAVOR=main
 ARG IMAGE_VENDOR=projectbluefin
 ARG VERSION=testing
 ARG SHA_HEAD_SHORT=unknown
+# Build-time mirror of the global PACKAGE_IMAGE pin, for the same per-stage
+# ARG scope reason as the PACKAGE_IMAGE_SHA re-declaration above: a bare ARG
+# inherits the global value, so the sidecar records the repository FROM
+# ${PACKAGE_IMAGE_REF} actually resolved, with or without a --build-arg, and
+# a plain `podman build` (no PACKAGE_IMAGE_REF override) cannot ship
+# provenance that disagrees with the packages it installed (#371). build-local
+# compensates by passing the local reference through explicitly; a manual
+# `podman build --build-arg PACKAGE_IMAGE_REF=…` overrides the pin and the
+# sidecar will name the new ref/digest together.
+ARG PACKAGE_IMAGE
+# Full Utah commit SHA this build was invoked from. Captured here as a
+# label and again in /usr/share/utah/build-manifest.json so a post-mortem
+# can name the commit a published image came from, instead of inferring it
+# from the short BUILD_ID (#371). On a runner it is GITHUB_SHA, which is
+# the ref actions/checkout resolved, so it pins the image to a reviewable
+# commit; it does not by itself prove that commit was the dispatch's
+# intended target. build-ghcr passes it; local builds fall back to
+# `git rev-parse HEAD`.
+ARG BUILD_COMMIT=unknown
 # Production images keep SSH closed; local VM diagnostics can opt in with
 # ENABLE_SSHD=1, following tunaOS's debug-image convention.
 ARG ENABLE_SSHD=0
@@ -269,8 +290,21 @@ RUN --mount=type=bind,from=packages,source=/repository,target=/etc/utah-packages
 # with no tmpfiles.d entry. This must run after the last package install, which
 # is the NVIDIA and OGC step, not after the main transaction. The lint that
 # checks the result runs in the same layer: nothing can change between the two.
-# The home-label check runs first: clean-stage removes the utah-* helpers.
+# The home-label check runs first so a relabelling failure aborts before the
+# cleanup erases the build residue that explains it.
+#
+# The build-manifest write also precedes clean-stage, for ordering only: it
+# captures BUILD_COMMIT and PACKAGE_IMAGE_SHA so a post-mortem can read the
+# commit and the factory digest off a running image, not just off the OCI
+# manifest (#371). clean-stage.sh clears only /var, /run, /tmp and
+# /utah-cache, so the published image keeps both the JSON and the
+# /usr/local/libexec/utah-* helpers that wrote it.
 RUN /usr/local/libexec/utah-fix-home-labels --check && \
+    BUILD_COMMIT="${BUILD_COMMIT}" \
+    PACKAGE_IMAGE="${PACKAGE_IMAGE}" \
+    PACKAGE_IMAGE_SHA="${PACKAGE_IMAGE_SHA}" \
+    VERSION="${VERSION}" \
+    /usr/local/libexec/utah-write-build-manifest && \
     /usr/local/libexec/utah-clean-stage && \
     bootc container lint --fatal-warnings --skip nonempty-boot
 
@@ -280,6 +314,7 @@ LABEL org.opencontainers.image.source="https://github.com/projectbluefin/utah"
 LABEL io.projectbluefin.utah.factory-digest="${PACKAGE_IMAGE_SHA}"
 LABEL org.opencontainers.image.vendor="${IMAGE_VENDOR}"
 LABEL org.opencontainers.image.version="${VERSION}"
+LABEL org.opencontainers.image.revision="${BUILD_COMMIT}"
 LABEL containers.bootc=1
 
 CMD ["/sbin/init"]
