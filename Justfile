@@ -232,6 +232,55 @@ baselines bluefin="ghcr.io/ublue-os/bluefin:stable" utah="ghcr.io/projectbluefin
     python3 scripts/image-baseline.py dakota "$run" baselines/dakota
     python3 scripts/image-baseline.py gap
 
+# Partition every Bluefin package Utah lacks by where it could come from:
+# hummingbird-available / factory-built / nowhere. The 2026-09-30 bare-metal
+# audit (#382) ran this pipeline by hand against the OCI image feeds. This
+# is the same pipeline as a single recipe so a future audit -- or a
+# scheduled drift report -- does not reinvent the manual sequence.
+#
+# Pulls the pinned factory OCI repodata (Containerfile PACKAGE_IMAGE_SHA)
+# and Hummingbird's primary.xml directly. No podman run is started; the
+# audit is a static-repodata read against the same pinned inputs
+# scripts/check-repo-availability.py mounts for `just check-repos`, so
+# the verdict and the install transaction cannot disagree on what the
+# repositories offer.
+#
+#   just audit-bluefin-parity                # partition + print, do not write
+#   just audit-bluefin-parity --write        # record the new baseline after printing
+#   just audit-bluefin-parity --check        # compare against the recorded baseline
+#
+# Pass `--ref <sha|tag|branch>` to audit against a Bluefin revision that
+# is not yet committed to packages/.bluefin-parity-ref. The default is the
+# pinned SHA in that file.
+audit-bluefin-parity ref="" write="0" check="0":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    args=()
+    if [ -n "{{ ref }}" ]; then
+      args+=(--ref "{{ ref }}")
+    fi
+    if [ "{{ write }}" = "1" ]; then
+      args+=(--write)
+    fi
+    if [ "{{ check }}" = "1" ]; then
+      subcommand="check"
+    else
+      subcommand="run"
+    fi
+    python3 scripts/audit-bluefin-parity.py "${subcommand}" "${args[@]}"
+
+# Gate: fail when an audit partition grew past baselines/audit-baseline.json.
+# The script also fails on a missing baseline; first run is `just
+# audit-bluefin-parity --write` to record the starting state of the debt.
+check-audit-parity ref="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    args=()
+    if [ -n "{{ ref }}" ]; then
+      args+=(--ref "{{ ref }}")
+    fi
+    python3 scripts/audit-bluefin-parity.py check "${args[@]}"
+
 image_name base_name stream flavor:
     @python3 scripts/flavors.py image "{{ flavor }}"
 

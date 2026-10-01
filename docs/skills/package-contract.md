@@ -1,7 +1,7 @@
 ---
 name: package-contract
 version: "1.0"
-last_updated: "2026-09-22"
+last_updated: "2026-10-01"
 id: package-contract
 one_line_purpose: Maintain Bluefin package parity and Utah's overlay manifest.
 entry_point: docs/skills/package-contract.md
@@ -186,11 +186,60 @@ assert a package in every section reaches the install set and is counted under
 its own heading, so a section wired into one place and not another fails the
 suite rather than shipping quietly.
 
+## Re-runnable parity audit (issue #402)
+
+`scripts/image-baseline.py` measures what files Bluefin ships that Utah
+does not (`baselines/GAP.md`). It does not say *where* the missing name
+could come from, only that it is missing. That gap was the 2026-09-30
+bare-metal audit (#382): `rpm -qa` both images, `comm` the difference,
+then partition each gap name by which repository could supply it.
+
+`scripts/audit-bluefin-parity.py` is the re-runnable version of that
+pipeline. Every name Bluefin ships that Utah does not install (and does
+not list in `[unavailable]`) lands in one of three partitions:
+
+- **hummingbird-available** — resolves against Hummingbird today. The
+  smallest move to close the gap is to add the name to `[parity]`
+  (or `[hardware]`, etc.); the manifest is the only thing in the way.
+- **factory-built** — absent from Hummingbird, present in the pinned
+  factory repository. The factory already builds what we need; this is a
+  manifest gap, not a factory gap.
+- **nowhere** — neither repository provides it. A factory recipe must
+  land first; until then, the name belongs in `[unavailable]` with a
+  tracking issue.
+
+The script reads the same pinned inputs as `just check-repos` (the
+Containerfile `PACKAGE_IMAGE_SHA` for the factory OCI; the baseurl in
+`packages/hummingbird.repo` for Hummingbird) and parses the
+`primary.xml` from each, so the verdict and the install transaction
+cannot disagree on what the repositories offer. No podman run is
+involved — the audit is a static repodata read.
+
+The audit also writes `baselines/audit-baseline.json`. The check
+subcommand compares the current run to the baseline and exits nonzero when
+a partition grows past the recorded state; a name moving from
+`factory-built` to `hummingbird-available` is a Hummingbird rebuild
+landing and is silent. This is the gate the bare-metal audit had to do
+by hand before #402: a single command (`just check-audit-parity`) now
+replaces that.
+
+```bash
+just audit-bluefin-parity           # partition + print, do not write
+just audit-bluefin-parity --write   # record the new baseline
+just check-audit-parity             # fail on partition growth
+just check-audit-parity ref=HEAD    # audit against an unpinned Bluefin ref
+```
+
+The audit needs network (the factory OCI metadata layer and Hummingbird's
+`repodata/`); it is a sibling of `just check-repos`, not part of `just
+check`, which stays offline.
+
 ## Verification
 
 ```bash
 just check-parity
 just check-repos
+just check-audit-parity
 python3 scripts/install-packages.py --check packages/bluefin.toml
 python3 scripts/verify-rpm-contract.py --check packages/bluefin.toml
 python3 scripts/check-doc-counts.py
