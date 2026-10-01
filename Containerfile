@@ -219,14 +219,17 @@ RUN --mount=type=bind,from=common,source=/system_files/bluefin/usr/share/pixmaps
     # installed (#398). fedora-logos ships Fedora-marked replacements for the
     # pixmaps and Plymouth themes the early overlay laid down; without this
     # reapplied layer, GDM would still fall back to the schema default (a
-    # GDM dconf keyfile is also installed and asserted by #378), and other
-    # consumers -- the about dialog, Plymouth, system-info panels -- would
-    # keep showing the Fedora wordmark. Only the paths that conflict with
-    # packages are reapplied; dconf, services, and Brewfiles are unaffected
+    # GDM dconf keyfile is in flight as #378/#379), and other consumers --
+    # the about dialog, Plymouth, system-info panels -- would keep showing
+    # the Fedora wordmark. Only the paths that conflict with packages are
+    # reapplied; dconf, services, and Brewfiles are unaffected
     # by RPMs and stay where the first overlay put them.
     cp -a /tmp/utah-bluefin-pixmaps/. /usr/share/pixmaps/ && \
     cp -a /tmp/utah-bluefin-plymouth/. /usr/share/plymouth/ && \
-    rm -rf /tmp/utah-bluefin-pixmaps /tmp/utah-bluefin-plymouth && \
+    # Bind mounts (/tmp/utah-bluefin-{pixmaps,plymouth}) vanish when this RUN
+    # exits; rm -rf on them fails with EROFS because the mounts are ro. The
+    # mirrors under /usr/share/{pixmaps,plymouth}/ are the files that actually
+    # ship; nothing else needs cleanup here.
     glib-compile-schemas /usr/share/glib-2.0/schemas && \
     ENABLE_SSHD="${ENABLE_SSHD}" /usr/local/libexec/utah-configure-services && \
     /usr/local/libexec/utah-configure-branding && \

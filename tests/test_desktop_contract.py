@@ -416,7 +416,7 @@ class BrandAssetOverlayOrderTests(unittest.TestCase):
         ``utah-install-packages`` RUN, not before it.
         """
         text = self._containerfile()
-        packages_index = text.find("utah-install-packages")
+        packages_index = text.find("/usr/local/libexec/utah-install-packages")
         pixmap_mount_index = text.find(
             "--mount=type=bind,from=common,source=/system_files/bluefin/usr/share/pixmaps"
         )
@@ -441,7 +441,7 @@ class BrandAssetOverlayOrderTests(unittest.TestCase):
         package transaction.
         """
         text = self._containerfile()
-        packages_index = text.find("utah-install-packages")
+        packages_index = text.find("/usr/local/libexec/utah-install-packages")
         plymouth_mount_index = text.find(
             "--mount=type=bind,from=common,source=/system_files/bluefin/usr/share/plymouth"
         )
