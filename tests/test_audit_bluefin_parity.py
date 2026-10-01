@@ -109,6 +109,24 @@ class BluefinManifestTests(unittest.TestCase):
             """)
         self.assertEqual(audit.bluefin_packages(text), {"coreutils"})
 
+    def test_bluefin_packages_picks_up_new_fedora_v_section_without_enumeration(self):
+        # A future [fedora_v45] (or any per-Fedora-version section Bluefin
+        # adds) must be in the union automatically; enumerating versions
+        # in bluefin_packages() makes the audit miss the gap the day
+        # Fedora ships a new release.
+        text = textwrap.dedent("""\
+            [fedora]
+            packages = ["coreutils"]
+            [fedora_v45]
+            packages = ["future-thing"]
+            [fedora_v44]
+            packages = ["evolution"]
+            """)
+        self.assertEqual(
+            audit.bluefin_packages(text),
+            {"coreutils", "future-thing", "evolution"},
+        )
+
 
 class GapTests(unittest.TestCase):
     def test_gap_names_exclude_every_overlay_section_and_unavailable(self):
