@@ -112,7 +112,7 @@ ARG GENERIC_LOGOS_SHA256=2f9247f480788ef5cea4bc9f872bc5653ae0578fb7bec045f8b807c
 # files, and a COPY would be a layer of its own.
 # After Common's files are copied into place we rename its `00-entry.just` to
 # `00-common.just` so Utah's entry point (`system_files/.../00-entry.just`,
-# installed one layer below by the `cp -a /tmp/utah-local/. / && \` below)
+# staged on the next line of this same RUN by `cp -a /tmp/utah-local/. /`)
 # can re-import it from a shallower depth than Common's recipes. On `just`
 # >= 1.56 the shallower import wins duplicate resolution, so Utah's
 # `60-custom.just` overrides Common's recipes in the live image. Earlier

@@ -10,6 +10,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 RECIPES = ROOT / "system_files/shared/usr/share/ublue-os/just/60-custom.just"
+BASELINE = ROOT / "baselines/utah/rpms.tsv"
 
 
 # casey/just 1.56 (2026-07-09) stopped deduplicating an AST across nested
@@ -54,6 +55,36 @@ else:
     _VERSION_SKIP_REASON = ""
 
 _VERSION_SKIP = unittest.skipUnless(not _VERSION_SKIP_REASON, _VERSION_SKIP_REASON)
+
+
+def _baseline_just_evr() -> str | None:
+    for line in BASELINE.read_text().splitlines():
+        name, _, evr = line.partition("\t")
+        if name == "just":
+            return evr.strip()
+    return None
+
+
+class JustFloorBaselineTests(unittest.TestCase):
+    """The shipped image, not just the developer's host, must clear the floor."""
+
+    def test_baseline_just_is_at_or_above_the_floor(self):
+        evr = _baseline_just_evr()
+        self.assertIsNotNone(evr, f"no `just` row in {BASELINE}")
+        version = evr.split("-", 1)[0]
+        try:
+            parsed = tuple(int(piece) for piece in version.split("."))
+        except ValueError:
+            self.fail(f"cannot parse `just` version from baseline EVR {evr!r}")
+        parsed += (0,) * (len(MINIMUM_JUST_VERSION) - len(parsed))
+        floor = ".".join(str(piece) for piece in MINIMUM_JUST_VERSION)
+        self.assertGreaterEqual(
+            parsed,
+            MINIMUM_JUST_VERSION,
+            f"image ships just {evr}, below the {floor} floor the ujust overrides"
+            " rely on; see projectbluefin/utah#449",
+        )
+
 
 @_VERSION_SKIP
 class UjustOverridesTests(unittest.TestCase):

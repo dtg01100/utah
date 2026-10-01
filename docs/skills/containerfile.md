@@ -186,13 +186,17 @@ preserves the mechanism by renaming Common's `00-entry.just` to
 `00-common.just` before staging Utah's local files, so the shallower override
 is in place by the time the entry point runs.
 
-Fedora 44 ships `just-1.47.1-1.fc44`, below the floor. The `just` package is
-inherited from Bluefin's parity manifest and is not overridden here, so a
-future Fedora bump is what lifts the runtime past 1.56. The host-side unit
-tests in `tests/test_ujust_overrides.py` skip with a message naming issue
-#449 when the host's `just` is below the floor and pass at or above it. Do
-not add `just` to `packages/bluefin.toml` or `packages/utah.toml` to bump it;
-that contract belongs to Bluefin.
+The shipped image is already past the floor: `baselines/utah/rpms.tsv` records
+`just 1.57.0-1.hum1.bfin` (Bluefin's parity manifest, `baselines/bluefin/rpms.tsv`,
+records `1.57.0-1.fc44`). The `just` package is inherited from Bluefin and its
+version is not pinned here. Two checks keep it that way:
+`tests/test_ujust_overrides.py` asserts the baseline NEVR stays >= 1.56 so an
+image regression below the floor fails the suite, and the same module's
+host-side override tests skip with a message naming issue #449 when the
+developer's own `just` is below the floor. `just` is already listed in
+`packages/bluefin.toml` as part of the mirrored parity manifest -- do not pin
+or override its version there or in `packages/utah.toml`; that contract
+belongs to Bluefin.
 
 ## Verification
 
