@@ -10,6 +10,7 @@
 #   [parity]       what Bluefin gets from Fedora's base image and Hummingbird has
 #   [hardware]     device firmware the bootable base leaves out entirely
 #   [build]        toolchain needed to build the pinned GNOME extensions
+#   [services]     desktop daemons enabled after the server base (cryptsetup, flatpak, fwupd, ...)
 #   [unavailable]  Bluefin contract packages none of Utah's repositories provide
 #
 # On [multimedia_overrides], which Utah deliberately does not install:
