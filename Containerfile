@@ -159,6 +159,10 @@ RUN --mount=type=bind,from=packages,source=/repository,target=/etc/utah-packages
 
 # Per-image arguments. Nothing above this line may read them; see the note on
 # layer discipline at the top.
+# Re-declared without a default so the provenance label at the end can read
+# the global pin's value: a global ARG is only in scope for FROM lines, and
+# without this the label baked empty (#371 follow-up).
+ARG PACKAGE_IMAGE_SHA
 ARG IMAGE_NAME=utah
 # Canonical OS identity, distinct from the repository name a flavor publishes
 # under. Always utah; never flavored.
@@ -167,16 +171,13 @@ ARG IMAGE_FLAVOR=main
 ARG IMAGE_VENDOR=projectbluefin
 ARG VERSION=testing
 ARG SHA_HEAD_SHORT=unknown
-# Build-time mirror of the global PACKAGE_IMAGE/PACKAGE_IMAGE_SHA pins.
-# Re-declared bare (no default) because Containerfile ARG scope is per-stage:
-# the global ARGs (lines 5-6) are visible to FROM lines but not to RUN/label
-# commands in the final stage without a bare re-declaration. Bare ARGs
-# inherit the global value at build time, so the label and the sidecar carry
-# the same digest FROM ${PACKAGE_IMAGE_REF} resolved, with or without a
-# --build-arg, and a plain `podman build` cannot ship a label that disagrees
-# with the packages it installed (#371).
+# Build-time mirror of the global PACKAGE_IMAGE pin, for the same per-stage
+# ARG scope reason as the PACKAGE_IMAGE_SHA re-declaration above: a bare ARG
+# inherits the global value, so the sidecar records the repository FROM
+# ${PACKAGE_IMAGE_REF} actually resolved, with or without a --build-arg, and
+# a plain `podman build` cannot ship provenance that disagrees with the
+# packages it installed (#371).
 ARG PACKAGE_IMAGE
-ARG PACKAGE_IMAGE_SHA
 # Full Utah commit SHA this build was invoked from. Captured here as a
 # label and again in /usr/share/utah/build-manifest.json so a post-mortem
 # can name the commit a published image came from, instead of inferring it
@@ -291,15 +292,10 @@ RUN /usr/local/libexec/utah-fix-home-labels --check && \
 LABEL org.opencontainers.image.title="Utah"
 LABEL org.opencontainers.image.description="A Hummingbird-based Bluefin GNOME workstation"
 LABEL org.opencontainers.image.source="https://github.com/projectbluefin/utah"
+LABEL io.projectbluefin.utah.factory-digest="${PACKAGE_IMAGE_SHA}"
 LABEL org.opencontainers.image.vendor="${IMAGE_VENDOR}"
 LABEL org.opencontainers.image.version="${VERSION}"
 LABEL org.opencontainers.image.revision="${BUILD_COMMIT}"
-# Records the package repository digest the transaction resolved against. This
-# is the same ARG the FROM ${PACKAGE_IMAGE_REF} line consumed and the same one
-# the sidecar is fed, so label and manifest cannot disagree; it names the
-# package set a shipped image installed from without diffing installed RPM
-# versions (#371).
-LABEL io.projectbluefin.utah.factory-digest="${PACKAGE_IMAGE_SHA}"
 LABEL containers.bootc=1
 
 CMD ["/sbin/init"]
