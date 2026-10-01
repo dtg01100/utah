@@ -107,6 +107,19 @@ default — `/usr/share/pixmaps/fedora-gdm-logo.png`, shipped by
 `fedora-logos`. The greeter on every installed Utah therefore opened with
 the Fedora wordmark.
 
+A first attempt at the fix was a pixmap overlay: `common` already ships a
+Bluefin-branded `system_files/bluefin/usr/share/pixmaps/fedora-gdm-logo.png`,
+and Utah copies `common`'s full `system_files/bluefin/` tree into the
+image at `Containerfile:118` (`cp -a /tmp/utah-bluefin/. /`). That overlay
+would have replaced the Fedora wordmark without any dconf change. It is
+not effective in practice, however: `utah-install-packages` runs
+afterwards at `Containerfile:148-150`, and `baselines/utah/rpms.tsv` shows
+`fedora-logos 42.0.1-6.hum1` in the image — the package reinstalls its
+own `/usr/share/pixmaps/fedora-*.png` (GDM logo, plymouth logo,
+about-dialog logo, system-logo-white), clobbering every overlaid
+`pixmaps/fedora-*` file. The root-cause ticket is #398; this fix uses a
+second mechanism, not the pixmap overlay.
+
 GDM uses its own dconf profile (`/etc/dconf/profile/gdm`, provided by the
 gdm RPM). Utah ships a single keyfile,
 `system_files/shared/etc/dconf/db/gdm.d/01-bluefin-gdm-logo`, that sets

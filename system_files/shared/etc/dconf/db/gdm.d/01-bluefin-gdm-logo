@@ -1,7 +1,15 @@
 # GDM reads the greeter logo from a separate dconf profile ("gdm"). Without
 # this keyfile, gnome-shell falls back to the schema default
 # (/usr/share/pixmaps/fedora-gdm-logo.png), which fedora-logos provides and
-# which is the Fedora wordmark. Utah overlays the Bluefin mark instead.
+# which is the Fedora wordmark. Utah overrides the schema string here.
+#
+# A pixmap overlay also exists: common ships a Bluefin-branded
+# system_files/bluefin/usr/share/pixmaps/fedora-gdm-logo.png, copied into
+# the image by Containerfile:118. It is not effective because
+# utah-install-packages runs after the overlay (Containerfile:148-150)
+# and reinstalls fedora-logos, clobbering every /usr/share/pixmaps/fedora-*.png.
+# Root-cause ticket: #398. This dconf override is the working fix and does
+# not need the overlay PNG to land on disk.
 #
 # The image is the same bluefin-logos/bluefin.png the desktop contract asserts
 # under /usr/share/ublue-os/bluefin-logos/ -- the file Common ships. Using the
