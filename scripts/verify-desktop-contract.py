@@ -110,8 +110,9 @@ def rpm_modified_paths(package: str) -> set[str] | None:
     """Paths of ``package`` whose on-disk content no longer matches the RPM.
 
     ``rpm -V`` prints one line per differing file, ``S.5....T.  /path``, where
-    column 2 is ``5`` when the digest differs. A non-zero exit only means
-    differences were found, which is exactly what the brand overlay produces,
+    column 3 of the attribute string (1-based, ``attrs[2]``) is ``5`` when the
+    digest differs. A non-zero exit only means differences were found, which
+    is exactly what the brand overlay produces,
     so the exit status is ignored and the attribute string is parsed instead.
     Returns ``None`` when rpm itself is unavailable.
     """

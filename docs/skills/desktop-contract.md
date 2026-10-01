@@ -161,13 +161,12 @@ image renders that watermark. It is still reapplied: `fedora-logos` owns the
 file in the composed image, so the regression is real there and is fixed
 ahead of the package landing rather than after it.
 
-The GDM greeter will be masked by an `org.gnome.login-screen.logo` dconf
-keyfile under `/etc/dconf/db/gdm.d/01-bluefin-gdm-logo` once #379 (#378)
-lands; until then GDM still falls back to the schema default. (#379 is still
-open; whichever of #379 and this change merges second must update this
-paragraph.) The other consumers — the About dialog, system-info panels, the
-login session background on the gnome-shell that runs *after* GDM — would
-keep doing so without the second overlay.
+The GDM greeter is masked by an `org.gnome.login-screen.logo` dconf keyfile
+under `/etc/dconf/db/gdm.d/01-bluefin-gdm-logo`, shipped by #379 (#378), so
+the greeter no longer falls back to the schema default. The other consumers —
+the About dialog, system-info panels, the login session background on the
+gnome-shell that runs *after* GDM — would keep doing so without the second
+overlay.
 
 The fix binds Common's brand-asset trees into the post-package-install RUN
 step (`--mount=type=bind,from=common,...`) and `cp -a`s them onto the

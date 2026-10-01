@@ -207,10 +207,10 @@ ARG UUPD_TIMER_SHA256=bbb5f098ec33d047bdef571e0bc112364df157e0f92d73e0febab703c4
 # fedora-gdm-logo.png, fedora-logo.png, fedora-logo-small.png,
 # fedora-logo-sprite.png, fedora_logo_med.png, fedora_whitelogo_med.png,
 # system-logo-white.png -- plus themes/spinner/watermark.png, so the RPM
-# transaction wins over the early overlay for exactly those files. Without this
-# second overlay GDM falls back to the schema default (a GDM dconf keyfile is
-# in flight as #378/#379) and the about dialog and system-info panels keep
-# showing the Fedora wordmark. watermark.png is reapplied because fedora-logos
+# transaction wins over the early overlay for exactly those files. GDM itself
+# is covered by the dconf keyfile from #378/#379; without this second overlay
+# the about dialog and system-info panels keep showing the Fedora wordmark.
+# watermark.png is reapplied because fedora-logos
 # owns it, not because anything renders it yet: Utah does not ship plymouth
 # (planned, #263), so that path only matters once it does. Only the paths
 # that conflict with packages are reapplied; dconf, services, and Brewfiles
