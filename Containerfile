@@ -110,6 +110,16 @@ ARG GENERIC_LOGOS_URL=https://download.fedoraproject.org/pub/fedora/linux/releas
 ARG GENERIC_LOGOS_SHA256=2f9247f480788ef5cea4bc9f872bc5653ae0578fb7bec045f8b807cacc50699e
 # The v4l2loopback stage's output is bind mounted rather than copied: it is two
 # files, and a COPY would be a layer of its own.
+# After Common's files are copied into place we rename its `00-entry.just` to
+# `00-common.just` so Utah's entry point (`system_files/.../00-entry.just`,
+# installed one layer below by the `cp -a /tmp/utah-local/. / && \` below)
+# can re-import it from a shallower depth than Common's recipes. On `just`
+# >= 1.56 the shallower import wins duplicate resolution, so Utah's
+# `60-custom.just` overrides Common's recipes in the live image. Earlier
+# `just` releases deduplicated the shared AST to the deeper import and
+# Common's recipes silently shadowed ours, so every override reverted
+# (issue #449). The `just` >= 1.56 floor is enforced by
+# tests/test_ujust_overrides.py.
 RUN --mount=type=bind,from=v4l2loopback,source=/out,target=/tmp/utah-v4l2loopback,ro \
     for pair in install-packages.py:utah-install-packages \
                 verify-rpm-contract.py:utah-verify-rpm-contract \

@@ -1,7 +1,7 @@
 ---
 name: containerfile
 version: "1.0"
-last_updated: "2026-09-30"
+last_updated: "2026-10-02"
 id: containerfile
 one_line_purpose: Edit the Containerfile without regressing layer count or cache hits.
 entry_point: docs/skills/containerfile.md
@@ -173,6 +173,26 @@ last package install, which is the NVIDIA and OGC step, not after the main
 transaction. The lint that checks the result runs in the same layer
 (`bootc container lint --fatal-warnings --skip nonempty-boot`): nothing can
 change between the two (comment, `Containerfile`).
+
+## `just` override and the 1.56 floor
+
+Utah's `00-entry.just` imports Common's renamed entry (`00-common.just`) plus
+its own `60-custom.just` at a shallower depth than Common's own `import?`
+lines reach `60-custom.just`. The override wins on `just` >= 1.56, which
+stopped deduplicating an AST across nested imports of the same file; earlier
+versions deduplicated, Common's deeper import shadowed ours, and every
+override silently reverted to Common's recipe (issue #449). The Containerfile
+preserves the mechanism by renaming Common's `00-entry.just` to
+`00-common.just` before staging Utah's local files, so the shallower override
+is in place by the time the entry point runs.
+
+Fedora 44 ships `just-1.47.1-1.fc44`, below the floor. The `just` package is
+inherited from Bluefin's parity manifest and is not overridden here, so a
+future Fedora bump is what lifts the runtime past 1.56. The host-side unit
+tests in `tests/test_ujust_overrides.py` skip with a message naming issue
+#449 when the host's `just` is below the floor and pass at or above it. Do
+not add `just` to `packages/bluefin.toml` or `packages/utah.toml` to bump it;
+that contract belongs to Bluefin.
 
 ## Verification
 
