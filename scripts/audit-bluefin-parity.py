@@ -36,14 +36,14 @@ Example
   just audit-bluefin-parity --write      # partition, print, record baseline
   just audit-bluefin-parity --check      # partition, compare to baseline, fail
                                          # on growth
-  python3 scripts/audit-bluefin-parity.py --check \\
-      --ref HEAD                         # compare against a chosen upstream ref
-                                         # (defaults to .bluefin-parity-ref)
+  just check-audit-parity --ref=HEAD     # same, with an unpinned Bluefin ref
+  python3 scripts/audit-bluefin-parity.py check --ref HEAD   # direct invocation
 """
 
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
 import io
 import json
@@ -205,13 +205,16 @@ def unpack_metadata(raw: bytes, destination: Path) -> None:
 # ---------- Repodata: Hummingbird yum repository ------------------------------
 
 
-def fetch_hummingbird_repodata(destination: Path) -> str:
+def fetch_hummingbird_repodata(destination: Path) -> tuple[str, str]:
     """Fetch Hummingbird's repomd.xml and the primary.xml it names.
 
     The baseurl is in packages/hummingbird.repo; only the .repo file Utah
     ships is read, so a future Fedora-release switch is one grep away.
-    Returns the baseurl the package list came from so the report can quote
-    the source.
+    Returns (baseurl, primary_basename) so the caller can quote the source
+    in the report and locate the file parse_primary() should read. The
+    primary file is written under its repomd.xml-named basename (e.g.
+    `repomd.xml.primary.xml.gz`) so the gzipped-vs-plain distinction is
+    visible to parse_primary() at the path level.
     """
     baseurl = ""
     for repo_file in HUMMINGBIRD_REPO_FILES:
@@ -241,8 +244,13 @@ def fetch_hummingbird_repodata(destination: Path) -> str:
     if primary_checksum and primary_checksum[0] == "sha256":
         if hashlib.sha256(raw).hexdigest() != primary_checksum[1]:
             raise ValueError("Hummingbird primary.xml failed checksum")
-    (destination / "hummingbird-primary.xml").write_bytes(raw)
-    return baseurl
+    # Preserve the repomd.xml-named basename so the gzipped form (the
+    # current Hummingbird layout: repodata/repomd.xml names primary.xml.gz)
+    # stays distinguishable from the plain XML form. parse_primary() keys
+    # on the basename to decide whether to decompress.
+    primary_basename = Path(primary_path).name
+    (destination / primary_basename).write_bytes(raw)
+    return baseurl, primary_basename
 
 
 # ---------- Parsing primary.xml --------------------------------------------
@@ -254,9 +262,18 @@ def parse_primary(path: Path) -> dict[str, str]:
     The audit partitions by name, so a single (name -> evr) map is the
     primary output of the script. EVR is recorded so the report prints
     `dnf list --available`-shaped evidence per name.
+
+    Repositories publish primary.xml in either form (plain XML or gzipped);
+    `primary_href()` returns the file basename, so the caller does not know
+    which form it landed on. Read the file by name and decompress on the
+    fly when the basename ends in .gz, mirroring how Hummingbird's
+    repomd.xml names the primary data (`*-primary.xml.gz`).
     """
+    raw = path.read_bytes()
+    if path.name.endswith(".gz"):
+        raw = gzip.decompress(raw)
     ns = ""
-    root = ET.fromstring(path.read_bytes())
+    root = ET.fromstring(raw)
     if root.tag.startswith("{"):
         ns = root.tag.split("}", 1)[0] + "}"
 
@@ -421,18 +438,34 @@ def baseline_record(parts: dict[str, list[str]], ref: str, factory_ref: str,
 def compare_to_baseline(parts: dict[str, list[str]], baseline: dict) -> list[str]:
     """Diff each partition against the recorded baseline.
 
-    Only growth is reported: a name that migrates from `factory-built` to
-    `hummingbird-available` is celebrated as a Hummingbird rebuild, not
-    flagged as drift. The check fails when a partition grew, period; the
-    expected shrink is a no-op.
+    A name migrating between partitions is celebrated as a rebuild
+    landing, not flagged as drift. The "moved elsewhere" set per partition
+    is the names in `new` minus the names in `old`, intersected with the
+    set of names that used to live in any other partition; these are
+    silent. The remaining new names -- ones that did not exist in the
+    baseline at all -- are the regression set, and the gate fails on them.
+
+    Shrinks are a no-op: a name dropping from a partition because the
+    gap closed (move to [parity] / [hardware] / etc.) is the operator's
+    intent, not a regression.
     """
+    old_names_by_partition: dict[str, set[str]] = {
+        partition: set(baseline.get(partition, []))
+        for partition in ("hummingbird-available", "factory-built", "nowhere")
+    }
+    all_old = set().union(*old_names_by_partition.values())
+
     msgs: list[str] = []
     for partition_name in ("hummingbird-available", "factory-built", "nowhere"):
-        old = set(baseline.get(partition_name, []))
+        old = old_names_by_partition[partition_name]
         new = set(parts[partition_name])
-        added = sorted(new - old)
-        if added:
-            msgs.append(f"{partition_name}: +{len(added)} {added}")
+        added = new - old
+        # Migrations (the name used to live in some other partition) are
+        # silent; brand-new names that did not exist anywhere in the
+        # baseline are the regression the gate must fail on.
+        regressions = sorted(name for name in added if name not in all_old)
+        if regressions:
+            msgs.append(f"{partition_name}: +{len(regressions)} {regressions}")
     return msgs
 
 
@@ -480,6 +513,35 @@ def primary_href(repomd: Path) -> str:
     raise ValueError("repodata/repomd.xml has no primary data entry")
 
 
+# Ref validator kept as a separate function so the tests exercise the
+# exact regex fetch_partition() applies, instead of duplicating the
+# pattern in the test file. Tests that previously inlined the regex
+# cannot catch a drift in this one.
+BLUEFIN_REF_PATTERNS = (
+    re.compile(r"[0-9a-f]{40}"),
+    re.compile(r"^(?!.*\.\.)[A-Za-z0-9._/-]+$"),
+)
+
+
+def validate_bluefin_ref(ref: str) -> None:
+    """Raise ValueError unless `ref` is a Bluefin commit SHA, branch, or tag.
+
+    A Bluefin ref is one of:
+
+    - a 40-character hex string (commit SHA), or
+    - a ref name that matches `^(?!.*\\.\\.)[A-Za-z0-9._/-]+$` (branch
+      or tag). The `..` lookahead rejects path traversal and shell
+      metacharacters; the regex restricts the alphabet to what git and
+      GitHub accept for ref names.
+
+    Anything else raises ValueError with the offending ref quoted. The
+    caller decides whether to fail the audit, fall back to the pinned
+    SHA, or surface it as a usage error.
+    """
+    if not any(pattern.fullmatch(ref) for pattern in BLUEFIN_REF_PATTERNS):
+        raise ValueError(f"Bluefin ref {ref!r} is neither a commit SHA nor a branch/tag name")
+
+
 def fetch_partition(args) -> tuple:
     """Run the audit's expensive pieces once and return everything callers need.
 
@@ -490,8 +552,7 @@ def fetch_partition(args) -> tuple:
     subcommands go through here.
     """
     ref = args.ref or PARITY_REF.read_text().strip()
-    if not re.fullmatch(r"[0-9a-f]{40}", ref) and not re.match(r"^(?!.*\.\.)[A-Za-z0-9._/-]+$", ref):
-        raise ValueError(f"Bluefin ref {ref!r} is neither a commit SHA nor a branch/tag name")
+    validate_bluefin_ref(ref)
     bluefin_text = bluefin_manifest(ref)
     utah = utah_manifest()
     factory_ref = pinned_inputs(CONTAINERFILE)[1]
@@ -503,8 +564,8 @@ def fetch_partition(args) -> tuple:
         repomd = root / "factory/repodata/repomd.xml"
         factory_index_path = repomd.parent / primary_href(repomd)
         factory = parse_primary(factory_index_path)
-        baseurl = fetch_hummingbird_repodata(root)
-        hummingbird = parse_primary(root / "hummingbird-primary.xml")
+        baseurl, hummingbird_basename = fetch_hummingbird_repodata(root)
+        hummingbird = parse_primary(root / hummingbird_basename)
 
     parts = partition(gap, hummingbird, factory)
     return ref, parts, hummingbird, factory, factory_ref, baseurl

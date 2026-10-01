@@ -157,10 +157,13 @@ class AuditSmokeTests(unittest.TestCase):
                 (destination / "repodata" / src.name).parent.mkdir(parents=True, exist_ok=True)
                 (destination / "repodata" / src.name).write_bytes(src.read_bytes())
 
-        def fake_hummingbird(destination: Path) -> str:
-            (destination / "hummingbird-primary.xml").write_bytes(
+        def fake_hummingbird(destination: Path) -> tuple[str, str]:
+            # The script writes the primary file under the repomd.xml-named
+            # basename (repodata/primary.xml here). Mirror that.
+            primary_basename = "primary.xml"
+            (destination / primary_basename).write_bytes(
                 (self.root / "hummingbird-primary.xml").read_bytes())
-            return "https://example.invalid/hummingbird/"
+            return "https://example.invalid/hummingbird/", primary_basename
 
         def fake_bluefin(ref: str) -> str:
             return (self.root / "bluefin.toml").read_text()

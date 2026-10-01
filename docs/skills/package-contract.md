@@ -215,19 +215,27 @@ Containerfile `PACKAGE_IMAGE_SHA` for the factory OCI; the baseurl in
 cannot disagree on what the repositories offer. No podman run is
 involved — the audit is a static repodata read.
 
-The audit also writes `baselines/audit-baseline.json`. The check
+The audit writes `baselines/audit-baseline.json` (only when the
+`--write` flag is passed; the default is report-only, matching the
+2026-09-30 audit's "look before you leap" posture). The check
 subcommand compares the current run to the baseline and exits nonzero when
 a partition grows past the recorded state; a name moving from
 `factory-built` to `hummingbird-available` is a Hummingbird rebuild
-landing and is silent. This is the gate the bare-metal audit had to do
-by hand before #402: a single command (`just check-audit-parity`) now
-replaces that.
+landing and is silent. A name disappearing from the baseline (an operator
+moved it into `[parity]` and closed the gap) is silent too — only new
+names that did not exist anywhere in the baseline trigger the gate.
+
+Bootstrap is a one-time manual command: on a fresh checkout where
+`baselines/audit-baseline.json` is missing, `just check-audit-parity`
+exits 2 with a clear message; running `just audit-bluefin-parity --write`
+once commits the starting state of the debt and turns the gate on.
+Subsequent runs gate against that baseline.
 
 ```bash
-just audit-bluefin-parity           # partition + print, do not write
-just audit-bluefin-parity --write   # record the new baseline
-just check-audit-parity             # fail on partition growth
-just check-audit-parity ref=HEAD    # audit against an unpinned Bluefin ref
+just audit-bluefin-parity              # partition + print, do not write
+just audit-bluefin-parity --write      # record the new baseline
+just check-audit-parity                # fail on partition growth
+just check-audit-parity --ref=HEAD     # audit against an unpinned Bluefin ref
 ```
 
 The audit needs network (the factory OCI metadata layer and Hummingbird's

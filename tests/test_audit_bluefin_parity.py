@@ -15,6 +15,7 @@ The audit's contract:
 """
 
 import contextlib
+import gzip
 import importlib.util
 import io
 import json
@@ -156,10 +157,11 @@ class PartitionTests(unittest.TestCase):
 
 
 class BaselineTests(unittest.TestCase):
-    def test_compare_reports_only_growth(self):
+    def test_compare_silent_on_partition_migration(self):
         # A name moving from factory-built to hummingbird-available is a
-        # Hummingbird rebuild landing; it must not be reported as drift.
-        # A new name in any partition is a regression, and it must be.
+        # Hummingbird rebuild landing; it must NOT be reported as drift.
+        # A brand-new name that did not exist anywhere in the baseline is
+        # the regression the gate must fail on; here, libgda.
         baseline = {
             "hummingbird-available": ["shell"],
             "factory-built": ["router", "modem"],
@@ -171,10 +173,7 @@ class BaselineTests(unittest.TestCase):
             "nowhere": ["obscure", "libgda"],
         }
         msgs = audit.compare_to_baseline(new, baseline)
-        self.assertEqual(len(msgs), 2)
-        self.assertTrue(any(msg.startswith("hummingbird-available") for msg in msgs))
-        self.assertTrue(any(msg.startswith("nowhere") for msg in msgs))
-        self.assertFalse(any("factory-built" in msg for msg in msgs))
+        self.assertEqual(msgs, ["nowhere: +1 ['libgda']"])
 
     def test_compare_silent_when_no_growth(self):
         baseline = {
@@ -188,6 +187,41 @@ class BaselineTests(unittest.TestCase):
             "nowhere": ["obscure"],
         }
         self.assertEqual(audit.compare_to_baseline(new, baseline), [])
+
+    def test_compare_reports_shrink_as_noop(self):
+        # A name dropping from a partition because the operator closed
+        # the gap (moved to [parity] / [hardware] / etc.) is silent.
+        baseline = {
+            "hummingbird-available": ["shell", "router"],
+            "factory-built": ["modem"],
+            "nowhere": ["obscure"],
+        }
+        new = {
+            "hummingbird-available": ["shell"],
+            "factory-built": ["modem"],
+            "nowhere": ["obscure"],
+        }
+        self.assertEqual(audit.compare_to_baseline(new, baseline), [])
+
+    def test_compare_reports_regression_in_every_partition(self):
+        # A brand-new name in any partition is a regression; the gate
+        # fails once per affected partition. This pins that the regression
+        # filter operates per-partition rather than as one union.
+        baseline = {
+            "hummingbird-available": ["shell"],
+            "factory-built": ["modem"],
+            "nowhere": ["obscure"],
+        }
+        new = {
+            "hummingbird-available": ["shell", "shell-new"],
+            "factory-built": ["modem", "modem-new"],
+            "nowhere": ["obscure", "nowhere-new"],
+        }
+        msgs = audit.compare_to_baseline(new, baseline)
+        self.assertEqual(len(msgs), 3)
+        self.assertIn("hummingbird-available: +1 ['shell-new']", msgs)
+        self.assertIn("factory-built: +1 ['modem-new']", msgs)
+        self.assertIn("nowhere: +1 ['nowhere-new']", msgs)
 
     def test_baseline_record_round_trips_through_json(self):
         parts = {"hummingbird-available": ["shell"], "factory-built": ["router"], "nowhere": ["obscure"]}
@@ -214,6 +248,24 @@ class PrimaryParsingTests(unittest.TestCase):
             """).encode()
         with tempfile.NamedTemporaryFile(suffix=".xml") as tmp:
             Path(tmp.name).write_bytes(xml)
+            parsed = audit.parse_primary(Path(tmp.name))
+        self.assertEqual(parsed["shell"], "1.1-1.fc44.x86_64")
+
+    def test_parse_primary_decompresses_gzipped_primary(self):
+        # Hummingbird publishes primary.xml.gz (repomd.xml's href ends in
+        # .gz). parse_primary() keys on the basename to decide whether to
+        # decompress, so a script that runs the real Hummingbird layout
+        # must succeed; a script that only handles plain XML would crash
+        # with xml.etree.ElementTree.ParseError at the first byte.
+        xml = textwrap.dedent("""\
+            <?xml version="1.0" encoding="UTF-8"?>
+            <metadata xmlns="http://linux.duke.edu/metadata/rpm" packages="1">
+              <package type="rpm"><name>shell</name><arch>x86_64</arch>
+                <version epoch="0">1.1</version><release>1.fc44</release></package>
+            </metadata>
+            """).encode()
+        with tempfile.NamedTemporaryFile(suffix=".xml.gz") as tmp:
+            Path(tmp.name).write_bytes(gzip.compress(xml))
             parsed = audit.parse_primary(Path(tmp.name))
         self.assertEqual(parsed["shell"], "1.1-1.fc44.x86_64")
 
@@ -263,33 +315,24 @@ class RefValidationTests(unittest.TestCase):
     def test_bluefin_ref_accepts_full_sha_and_branch_names(self):
         # The default ref comes from packages/.bluefin-parity-ref (a
         # 40-character SHA) but the audit also takes a branch or tag for
-        # a one-off review of a candidate Bluefin release.
+        # a one-off review of a candidate Bluefin release. The validator
+        # lives in the script (audit.validate_bluefin_ref); the test
+        # calls it so a regex drift surfaces here, not just in production.
         for ref in ("a" * 40, "main", "release/2026-09", "v1.2.3"):
             with self.subTest(ref=ref):
-                with tempfile.NamedTemporaryFile(suffix=".xml") as tmp:
-                    Path(tmp.name).write_bytes(b"<x/>")
-                    # bluefin_manifest() does the HTTP fetch; we only
-                    # care that the regex validation passes here, so call
-                    # the validation directly.
-                    import re
-                    self.assertTrue(
-                        re.fullmatch(r"[0-9a-f]{40}", ref)
-                        or re.match(r"^[A-Za-z0-9._/-]+$", ref)
-                    )
+                # No exception: the ref is valid.
+                audit.validate_bluefin_ref(ref)
 
     def test_bluefin_ref_rejects_path_traversal(self):
         # A ref is a git revision identifier; paths and weird characters
         # cannot be one, so the validator must refuse them rather than
         # silently construct an unsafe URL. The `..` check is what catches
-        # ../etc/passwd; the [^;\n] range catches shell metacharacters
-        # and newlines that an interpolation bug would let through.
-        import re
+        # ../etc/passwd; shell metacharacters and newlines fall outside
+        # the [A-Za-z0-9._/-] alphabet.
         for bad in ("../etc/passwd", "main; rm -rf /", "head\ninjected"):
             with self.subTest(ref=bad):
-                self.assertFalse(
-                    re.fullmatch(r"[0-9a-f]{40}", bad)
-                    or re.match(r"^(?!.*\.\.)[A-Za-z0-9._/-]+$", bad)
-                )
+                with self.assertRaises(ValueError):
+                    audit.validate_bluefin_ref(bad)
 
 
 class SubcommandTests(unittest.TestCase):

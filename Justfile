@@ -252,34 +252,39 @@ baselines bluefin="ghcr.io/ublue-os/bluefin:stable" utah="ghcr.io/projectbluefin
 # Pass `--ref <sha|tag|branch>` to audit against a Bluefin revision that
 # is not yet committed to packages/.bluefin-parity-ref. The default is the
 # pinned SHA in that file.
-audit-bluefin-parity ref="" write="0" check="0":
+#
+# Args are forwarded as `--key=value` because `just` does not allow
+# bare `--flag value` to reach a recipe body without going through a
+# parameter binding. The forwarding script re-parses them.
+audit-bluefin-parity *args:
     #!/usr/bin/env bash
     set -euo pipefail
-    args=()
-    if [ -n "{{ ref }}" ]; then
-      args+=(--ref "{{ ref }}")
-    fi
-    if [ "{{ write }}" = "1" ]; then
-      args+=(--write)
-    fi
-    if [ "{{ check }}" = "1" ]; then
-      subcommand="check"
-    else
-      subcommand="run"
-    fi
-    python3 scripts/audit-bluefin-parity.py "${subcommand}" "${args[@]}"
+    subcommand="run"
+    forward=()
+    for arg in "$@"; do
+      case "$arg" in
+        --check) subcommand="check" ;;
+        --write) forward+=(--write) ;;
+        --ref=*) forward+=("$arg") ;;
+        *) echo "audit-bluefin-parity: unknown argument: $arg" >&2; exit 64 ;;
+      esac
+    done
+    python3 scripts/audit-bluefin-parity.py "$subcommand" "${forward[@]+"${forward[@]}"}"
 
 # Gate: fail when an audit partition grew past baselines/audit-baseline.json.
 # The script also fails on a missing baseline; first run is `just
 # audit-bluefin-parity --write` to record the starting state of the debt.
-check-audit-parity ref="":
+check-audit-parity *args:
     #!/usr/bin/env bash
     set -euo pipefail
-    args=()
-    if [ -n "{{ ref }}" ]; then
-      args+=(--ref "{{ ref }}")
-    fi
-    python3 scripts/audit-bluefin-parity.py check "${args[@]}"
+    forward=()
+    for arg in "$@"; do
+      case "$arg" in
+        --ref=*) forward+=("$arg") ;;
+        *) echo "check-audit-parity: unknown argument: $arg" >&2; exit 64 ;;
+      esac
+    done
+    python3 scripts/audit-bluefin-parity.py check "${forward[@]+"${forward[@]}"}"
 
 image_name base_name stream flavor:
     @python3 scripts/flavors.py image "{{ flavor }}"
