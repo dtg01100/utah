@@ -24,12 +24,14 @@ What it records:
 
 Three of the four values (`commit`, `package_image_sha`, `version`) are also
 OCI LABELs (`org.opencontainers.image.revision`,
-`io.projectbluefin.utah.package_image_sha`, `org.opencontainers.image.version`),
+`io.projectbluefin.utah.factory-digest`, `org.opencontainers.image.version`),
 so a sanity check on the JSON is just a compare to those labels.
-`package_image` has no LABEL counterpart. The values come from environment
-variables the Containerfile passes through from its ARGs; fallbacks keep the
-script invokable from a local build for parity testing without breaking the
-contract.
+The OCI label name is ``factory-digest`` (projectbluefin/utah#374), not
+``package_image_sha``; the JSON field keeps ``package_image_sha`` because
+that is the sidecar's logical name. ``package_image`` has no LABEL
+counterpart. The values come from environment variables the Containerfile
+passes through from its ARGs; fallbacks keep the script invokable from a
+local build for parity testing without breaking the contract.
 """
 
 from __future__ import annotations

@@ -322,12 +322,6 @@ build-ghcr base_name stream flavor kernel_pin="":
     # pin FROM ${PACKAGE_IMAGE_REF} already resolved. Not passing it as a
     # build-arg is deliberate: the runner cannot be tricked into labelling
     # an image with a digest it did not install.
-    # The package repository digest the Containerfile pins reaches the
-    # label and /usr/share/utah/build-manifest.json through the bare
-    # `ARG PACKAGE_IMAGE_SHA` in the final stage, which inherits the global
-    # pin FROM ${PACKAGE_IMAGE_REF} already resolved. Not passing it as a
-    # build-arg is deliberate: the runner cannot be tricked into labelling
-    # an image with a digest it did not install.
     podman build \
       "${base_args[@]}" \
       "${layer_cache_args[@]}" \

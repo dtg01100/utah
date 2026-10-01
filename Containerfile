@@ -277,8 +277,7 @@ RUN --mount=type=bind,from=packages,source=/repository,target=/etc/utah-packages
 # captures BUILD_COMMIT and PACKAGE_IMAGE_SHA so a post-mortem can read the
 # commit and the factory digest off a running image, not just off the OCI
 # manifest (#371). clean-stage.sh clears only /var, /run, /tmp and
-# /utah-cache, so the
-# published image keeps both the JSON and the
+# /utah-cache, so the published image keeps both the JSON and the
 # /usr/local/libexec/utah-* helpers that wrote it.
 RUN /usr/local/libexec/utah-fix-home-labels --check && \
     BUILD_COMMIT="${BUILD_COMMIT}" \
@@ -300,7 +299,7 @@ LABEL org.opencontainers.image.revision="${BUILD_COMMIT}"
 # the sidecar is fed, so label and manifest cannot disagree; it names the
 # package set a shipped image installed from without diffing installed RPM
 # versions (#371).
-LABEL io.projectbluefin.utah.package_image_sha="${PACKAGE_IMAGE_SHA}"
+LABEL io.projectbluefin.utah.factory-digest="${PACKAGE_IMAGE_SHA}"
 LABEL containers.bootc=1
 
 CMD ["/sbin/init"]

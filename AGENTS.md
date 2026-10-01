@@ -74,7 +74,7 @@ checks (`scripts/check-skill-frontmatter.sh`, `scripts/check-skill-index.sh`,
   pinned `utah-packages` OCI repository and Hummingbird's own repository.
 - **Every published image records its inputs.** The Containerfile writes
   `org.opencontainers.image.revision` (the full Utah commit SHA the build
-  was invoked from) and `io.projectbluefin.utah.package_image_sha` (the
+  was invoked from) and `io.projectbluefin.utah.factory-digest` (the
   `PACKAGE_IMAGE_SHA` the transaction resolved) as LABELs, and
   `scripts/write-build-manifest.py` writes the same fields plus
   `package_image` and `version` to

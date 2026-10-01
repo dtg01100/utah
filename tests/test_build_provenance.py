@@ -56,12 +56,18 @@ class BuildProvenanceContainerfileTests(unittest.TestCase):
             self.text,
         )
 
-    def test_package_image_sha_label(self):
-        # The package image digest label names the package set a shipped
-        # image installed from, without diffing installed RPM versions. It
-        # reads the same ARG the sidecar is fed, so the two cannot skew.
+    def test_factory_digest_label(self):
+        # The factory digest label names the package set a shipped image
+        # installed from, without diffing installed RPM versions. It reads
+        # the same ARG the sidecar is fed, so the two cannot skew.
+        # The label name ``factory-digest`` matches main
+        # (projectbluefin/utah#374); keeping one canonical name across
+        # the label and the sidecar JSON field is a deliberate split --
+        # the JSON field is the sidecar's logical name and stays
+        # ``package_image_sha``; the OCI label is the canonical name and
+        # matches main.
         self.assertIn(
-            'LABEL io.projectbluefin.utah.package_image_sha="'
+            'LABEL io.projectbluefin.utah.factory-digest="'
             '${PACKAGE_IMAGE_SHA}"',
             self.text,
         )

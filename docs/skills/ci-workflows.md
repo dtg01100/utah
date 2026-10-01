@@ -172,7 +172,7 @@ to avoid evidence-update build loops. Nightly runs still sync those changes.
 The dispatched build that consumed a stale `PACKAGE_IMAGE_SHA` under a
 post-bump `BUILD_ID` (#371) is why every shipped image carries its inputs:
 `org.opencontainers.image.revision` and
-`io.projectbluefin.utah.package_image_sha` on the OCI manifest, and the same
+`io.projectbluefin.utah.factory-digest` on the OCI manifest, and the same
 two fields plus `package_image` and `version` in
 `/usr/share/utah/build-manifest.json`. `revision` is the runner's
 `GITHUB_SHA`, i.e. the ref `actions/checkout` resolved — it identifies the
