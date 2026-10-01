@@ -374,6 +374,62 @@ verify_desktop_and_identity() {
     fi
 }
 
+# Collect the systemd-boot entry listing from the guest and run the
+# bootmgr validator against the bootc status JSON that the phase already
+# produced. Each entry is emitted as `=== ENTRY <path> ===\n<content>\n=== END ===`
+# so the parser can read the file names back out without shell globbing; the
+# harness-side validation joins the phases together and surfaces a missing
+# entry as an explicit failure rather than letting a half-finalized staged
+# deployment boot the old kernel set.
+#
+# Arguments:
+#   $1 status-file: path to the bootc status JSON the phase captured
+#   $2 label: short label written to the evidence file
+#   $3 slots: comma-separated bootc slots the phase must have entries for
+collect_bootmgr_listing() {
+    # Read both the ESP `/loader/entries` (bootc writes here) and any
+    # XBOOTLDR `/loader/entries` (BLS spec says implementations should also
+    # pick those up). The find tolerates either or both being absent.
+    # Reads as root, since the ESP is typically fmask=0077 root-only and an
+    # EPERM read silently produces an empty listing indistinguishable from
+    # "finalize wrote nothing". `sudo` is preferred over `2>/dev/null || true`
+    # so a permission failure fails loudly and the validator's missing-entry
+    # message is honest.
+    ssh_target 'sudo bash -s' <<'INNER'
+shopt -s nullglob
+seen=0
+for root in /boot/loader/entries /boot/efi/loader/entries; do
+    [ -d "$root" ] || continue
+    for f in "$root"/*.conf; do
+        [ -f "$f" ] || continue
+        printf '=== ENTRY %s ===\n' "$f"
+        cat "$f"
+        printf '\n=== END ===\n'
+        seen=$((seen+1))
+    done
+done
+echo "$seen entries captured" >&2
+INNER
+}
+
+verify_bootmgr_entries() {
+    local status_file="$1"
+    local label="$2"
+    local slots="${3:-booted,staged,rollback}"
+    local listing_file="${EVIDENCE}/loader-entries-${label}.txt"
+    local diag_file="${EVIDENCE}/bootmgr-${label}.json"
+
+    echo "Verifying systemd-boot entries (${label})..."
+    collect_bootmgr_listing > "${listing_file}"
+    python3 "${ROOT}/scripts/bootc_lifecycle.py" validate-bootmgr \
+        --status "${status_file}" \
+        --listing "${listing_file}" \
+        --slots "${slots}" \
+        --output "${diag_file}" \
+        || diagnose_failure "systemd-boot entry validation failed during ${label} (see ${diag_file})"
+    echo "  boot-manager: BLS entries verified for slots ${slots}"
+}
+
 # --- Prepare Disk ---
 echo "=== Preparing test deployment ==="
 if [[ "${DISK_OR_ISO}" == *.iso ]]; then
@@ -448,6 +504,8 @@ ACTIVE_DIGEST="${BASELINE_DIGEST}"
 python3 "${ROOT}/scripts/bootc_lifecycle.py" validate-phase baseline \
     --status "${WORK}/baseline-status.json" \
     || diagnose_failure "Baseline deployment validation failed"
+
+verify_bootmgr_entries "${WORK}/baseline-status.json" baseline booted
 
 python3 "${ROOT}/scripts/bootc_lifecycle.py" record-diagnostics \
     --output-dir "${EVIDENCE}" \
@@ -538,6 +596,12 @@ python3 "${ROOT}/scripts/bootc_lifecycle.py" validate-phase staged \
     --candidate-image "${CANDIDATE_EXPECTED_IMAGE}" \
     || diagnose_failure "Staged deployment validation failed"
 
+# Phase 2 only checks `booted`: ostree-finalize-staged does not write the
+# staged BLS entry until shutdown, so on a correctly-functioning system the
+# entry does not exist yet and would fail the validator. Phase 3 (post-reboot)
+# checks both slots.
+verify_bootmgr_entries "${WORK}/staged-status.json" staged "booted"
+
 python3 "${ROOT}/scripts/bootc_lifecycle.py" record-diagnostics \
     --output-dir "${EVIDENCE}" \
     --phase staged \
@@ -573,6 +637,8 @@ python3 "${ROOT}/scripts/bootc_lifecycle.py" validate-phase upgraded \
     --baseline-digest "${BASELINE_DIGEST}" \
     --candidate-digest "${EXPECTED_DIGEST}" \
     || diagnose_failure "Upgraded deployment validation failed"
+
+verify_bootmgr_entries "${WORK}/upgraded-status.json" upgraded "booted"
 
 python3 "${ROOT}/scripts/bootc_lifecycle.py" record-diagnostics \
     --output-dir "${EVIDENCE}" \
@@ -611,6 +677,8 @@ python3 "${ROOT}/scripts/bootc_lifecycle.py" validate-phase rollback \
     --status "${WORK}/rollback-status.json" \
     --baseline-digest "${BASELINE_DIGEST}" \
     || diagnose_failure "Rollback verification failed"
+
+verify_bootmgr_entries "${WORK}/rollback-status.json" rollback booted
 
 python3 "${ROOT}/scripts/bootc_lifecycle.py" record-diagnostics \
     --output-dir "${EVIDENCE}" \
