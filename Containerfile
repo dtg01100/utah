@@ -168,13 +168,14 @@ ARG IMAGE_VENDOR=projectbluefin
 ARG VERSION=testing
 ARG SHA_HEAD_SHORT=unknown
 # Build-time mirror of the global PACKAGE_IMAGE/PACKAGE_IMAGE_SHA pins.
-# Re-declared here because Containerfile ARG scope is per-stage: the global
-# ARGs (lines 5-6) are not visible to the final stage, and the
-# build-manifest sidecar needs both names literally. Values are supplied by
-# the build-ghcr Justfile, which reads them out of this very file so a
-# build-arg forgery cannot diverge the manifest from the pin.
-ARG PACKAGE_IMAGE=ghcr.io/projectbluefin/utah-packages
-ARG PACKAGE_IMAGE_SHA=sha256:0f04cff2dd0b085604ff3cd79d538ab14b97cbe356980f7d365a35dfc70c857b
+# Re-declared bare (no default) because Containerfile ARG scope is per-stage:
+# the global ARGs (lines 5-6) are visible to FROM lines but not to RUN/label
+# commands in the final stage without a bare re-declaration. Bare ARGs
+# inherit the global value at build time, so this stays in lock-step with
+# the canonical pin (#371). The build-manifest sidecar reads both names
+# literally.
+ARG PACKAGE_IMAGE
+ARG PACKAGE_IMAGE_SHA
 # Full Utah commit SHA the build was dispatched against. Captured here as a
 # label and again in /usr/share/utah/build-manifest.json so the next
 # post-mortem compares the installed package set to the exact commit that
