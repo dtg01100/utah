@@ -158,29 +158,58 @@ class UjustOverridesTests(unittest.TestCase):
         # projectbluefin/utah#446: ujust report on Utah was falling through
         # common's routing grammar and landing in projectbluefin/common.
         # Utah overrides `report` in 60-custom.just so bonedigger-report
-        # routes through the local utah-image-repo shim. The fixture below
-        # wires a fake bonedigger-report into the same import graph the image
-        # ships, then runs `just --show report` to verify the override is the
-        # version `just` resolves at the entry point (the shallower import
-        # depth wins on just >= 1.56).
-        self.mock("bonedigger-report", 'echo "bonedigger $*" >> "$CALLS"; '
-                  'echo "${UBLUE_IMAGE_REPO_BIN:-unset}" >> "$CALLS"')
-        result = subprocess.run([self.just, "--justfile", str(self.entry),
-                                 "--show", "report"],
+        # routes through the local utah-image-repo shim. Run the recipe
+        # end-to-end through the entry point with the absolute path the
+        # recipe calls replaced by a tmp-dir stub; the stub records the
+        # UBLUE_IMAGE_REPO_BIN env that the recipe set, which proves the
+        # shim path is what bonedigger sees at runtime, not the default
+        # ublue-image-repo from common. The entry point resolves `report`
+        # to Utah's override because the shallower import wins duplicate
+        # handling on just >= 1.56.
+        bonedigger_stub = self.root / "usr-libexec-bonedigger-report"
+        bonedigger_stub.write_text(
+            "#!/usr/bin/bash\n"
+            'echo "bonedigger $*" >> "$CALLS"\n'
+            'echo "${UBLUE_IMAGE_REPO_BIN:-unset}" >> "$CALLS"\n'
+        )
+        bonedigger_stub.chmod(0o755)
+        # Rewrite the entry's resolved recipe text so the absolute
+        # `/usr/libexec/bonedigger-report` calls the stub instead. The
+        # rewrite lives in a tmp copy that the entry justfile imports; the
+        # original recipe source on disk is untouched.
+        original_recipe = RECIPES.read_text()
+        patched_recipes = self.root / "60-custom.just"
+        patched_recipes.write_text(original_recipe.replace(
+            "/usr/libexec/bonedigger-report", str(bonedigger_stub)
+        ))
+        # Replace the entry's import of the live recipe with the patched copy
+        # so `just` resolves the stubbed path.
+        entry_text = self.entry.read_text()
+        self.entry.write_text(entry_text.replace(str(RECIPES), str(patched_recipes)))
+
+        result = subprocess.run([self.just, "--justfile", str(self.entry), "report"],
                                 env=self.env, text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        # Override body must set the UBLUE_IMAGE_REPO_BIN env to the shim path
-        # and call bonedigger-report through the recipe.
-        self.assertIn("bonedigger-report", result.stdout)
-        self.assertIn("/usr/local/libexec/utah-image-repo", result.stdout)
-        # And the dynamic routing behaviour must surface the shim path at
-        # runtime, not the default ublue-image-repo from common.
-        self.assertNotIn("/usr/libexec/ublue-image-repo", result.stdout)
-        text = RECIPES.read_text()
+        calls = self.calls()
+        # The stub is what the recipe actually executed, so its presence in
+        # the calls log proves the recipe reached bonedigger-report (not the
+        # default ublue-image-repo path). The stub wrote the UBLUE_IMAGE_REPO_BIN
+        # env it received, so the second line proves the shim path was set
+        # for bonedigger-report at runtime, not the default from common.
+        self.assertTrue(calls.startswith("bonedigger \n"),
+                        f"bonedigger stub did not run; calls={calls!r}")
+        self.assertIn("/usr/local/libexec/utah-image-repo", calls,
+                      "ujust report must set UBLUE_IMAGE_REPO_BIN to the Utah shim")
+        self.assertNotIn("unset", calls,
+                          "UBLUE_IMAGE_REPO_BIN must be set by the recipe, "
+                          "not left to fall back to common's ublue-image-repo")
+        # Static guard: the shipped recipe text must also reference the shim
+        # path directly, so a future contributor who removes the export
+        # breaks the test before the merge claim.
         match = re.search(
             r"report \*args:\s*\n"
             r"(?P<body>(?:[ \t].*\n|\s*\\\s*\n)+)",
-            text,
+            original_recipe,
         )
         self.assertIsNotNone(
             match,
