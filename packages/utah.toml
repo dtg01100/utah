@@ -400,10 +400,10 @@ packages = [
 #   Homebrew's stated reason is that the release tarball checksum changed
 #   after publication, so upstream may have been compromised; the factory
 #   recipe must pin a source verified against upstream's retagged release
-#   rather than reuse the brew formula's URL (caveat carried in
-#   utah-packages#311). Add `nvtop` to `[parity]` once utah-packages#311
-#   publishes an Hummingbird-targeted build, which must only happen after
-#   that verification. Tracked by #451 and utah-packages#311.
+#   rather than reuse the brew formula's URL (recorded as an acceptance
+#   requirement on utah-packages#311). Add `nvtop` to `[parity]` once
+#   utah-packages#311 publishes an Hummingbird-targeted build, which must only
+#   happen after that verification. Tracked by #451 and utah-packages#311.
 packages = [
     "grub2-efi-x64-cdboot",
     "anaconda-live",
