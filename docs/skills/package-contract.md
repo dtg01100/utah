@@ -322,8 +322,13 @@ reports route to `projectbluefin/utah` instead of falling through Common's
 shim short-circuits every `utah*` name to `projectbluefin/utah` and forwards
 every other name to Common's authoritative resolver (so non-Utah images
 inheriting from this image still resolve correctly). The shim itself is
-installed by `Containerfile` from `scripts/utah-image-repo` (alongside the
-other `utah-*` helpers) and listed in `just check`'s presence assertion.
+installed by `Containerfile` from `scripts/image-repo.sh` (alongside the
+other `utah-*` helpers, under the same `<name>.sh` -> `utah-<name>`
+rename) and listed in `just check`'s presence assertion. Its option
+loop mirrors Common's exactly — `--` and the first non-option both end
+option parsing — and the remaining positionals are forwarded verbatim,
+so an empty `IMAGE_NAME` keeps its slot instead of promoting
+`IMAGE_TAG` into it.
 
 Two deliberate differences from Common's `report` recipe: the override sets
 `BONEDIGGER_BRAND="🐦 Utah Bug Report"` so the prompt names Utah rather than

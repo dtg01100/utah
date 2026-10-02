@@ -5,7 +5,7 @@ common's `/usr/libexec/ublue-image-repo`. Utah's `ujust report` falls through
 that grammar's `*` arm because it does not list `utah*`, and the
 hard-coded `--default projectbluefin/common` then wins (projectbluefin/utah#446).
 
-`scripts/utah-image-repo` is the Utah-local shim that fixes the reverse direction:
+`scripts/image-repo.sh` is the Utah-local shim that fixes the reverse direction:
 short-circuit any `utah*` name to `projectbluefin/utah`, then forward every
 other call (and any args) to common's authoritative resolver so its grammar
 remains the single source of truth for non-Utah image names.
@@ -21,7 +21,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SHIM = ROOT / "scripts/utah-image-repo"
+SHIM = ROOT / "scripts/image-repo.sh"
 
 # The shim is only meaningful once Utah has branched off common; if a future
 # Utah layout moves the file, the test should follow it, not pass trivially.
@@ -151,6 +151,44 @@ class UtahImageRepoTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("upstream bluefin\n", self.upstream_calls_text())
         self.assertIn("argc 1", self.upstream_calls_text())
+
+    def test_empty_image_name_keeps_its_positional_slot(self):
+        # bonedigger-report always passes two positionals ("$IMAGE_NAME"
+        # "$IMAGE_TAG"), and IMAGE_NAME can be empty on a broken
+        # /usr/lib/os-release. The shim must not slide the tag into the name
+        # slot: common's grammar still routes an empty name with an lts* tag
+        # to bluefin-lts, and that decision belongs to common.
+        result = self.run_shim("--default", "projectbluefin/common",
+                               "", "lts-20260101")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("argc 4", self.upstream_calls_text())
+        self.assertIn("upstream --default projectbluefin/common  lts-20260101\n",
+                      self.upstream_calls_text())
+
+    def test_double_dash_positionals_are_forwarded(self):
+        # common ends option parsing on `--` and reads the rest as
+        # IMAGE_NAME/IMAGE_TAG. The shim claims the same grammar, so the
+        # trailing args must reach the upstream rather than being dropped.
+        result = self.run_shim("--default", "projectbluefin/common",
+                               "--", "dakota", "testing")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("upstream --default projectbluefin/common dakota testing",
+                      self.upstream_calls_text())
+
+    def test_double_dash_utah_name_still_short_circuits(self):
+        result = self.run_shim("--", "utah", "testing")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "projectbluefin/utah")
+        self.assertEqual(self.upstream_calls_text(), "")
+
+    def test_options_after_the_first_positional_are_not_parsed(self):
+        # common breaks out of its option loop on the first non-option, so a
+        # late --default is just another positional. The shim must forward it
+        # verbatim instead of consuming it as its own option.
+        result = self.run_shim("bluefin", "--default", "projectbluefin/knuckle")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("upstream bluefin --default projectbluefin/knuckle\n",
+                      self.upstream_calls_text())
 
     def test_missing_default_argument_value_is_rejected(self):
         # `--default` without a value is a usage error in both the shim and
