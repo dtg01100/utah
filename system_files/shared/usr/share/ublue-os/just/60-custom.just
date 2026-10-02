@@ -81,11 +81,15 @@ enroll-secure-boot-key:
 # BONEDIGGER_VERSION is intentionally not forwarded because
 # bonedigger-report never reads it and the variable is not in scope here.
 #
-# On a stale image where the shim is missing the recipe must not crash with
-# "No such file or directory" -- that is the bug filed as #487. Fall back to
-# common's resolver so the report still goes somewhere instead of refusing to
-# submit (#487). The user is warned so they know to file in projectbluefin/common
-# until they update, not projectbluefin/utah.
+# On an image where the shim is missing, the recipe must not crash with
+# "No such file or directory" -- that is the bug filed as #487. Fall back
+# to common's resolver so the report still goes somewhere instead of
+# refusing to submit (#487). The user is warned so they know to file in
+# projectbluefin/common until they update, not projectbluefin/utah. The
+# root cause is not fully pinned -- the reporter's image was built after
+# the shim COPY landed, so something is wiping /usr/local/libexec at
+# compose time on nvidia-gaming (the NVIDIA installer is the prime
+# suspect); the fallback is defensive until that is confirmed either way.
 #
 # Keep the blank line above: just uses only the comment line immediately
 # preceding a recipe as its `--list` description.

@@ -347,12 +347,21 @@ option parsing — and the remaining positionals are forwarded verbatim,
 so an empty `IMAGE_NAME` keeps its slot instead of promoting
 `IMAGE_TAG` into it.
 
-On a stale image where the shim is missing, the override logs a warning and
+On an image where the shim is missing, the override logs a warning and
 falls back to Common's `/usr/libexec/ublue-image-repo` so `ujust report`
 still submits somewhere instead of crashing with "No such file or directory"
-(#487). The bug will then land in `projectbluefin/common` until the user
-updates; the warning names the fallback and the tracking issue so the user
-knows what to expect.
+(#487). `clean-stage.sh` never touches `/usr/local/libexec/`, so on a
+correctly built image the shim is present; the fallback exists for the
+cases we have seen in the wild but not yet pinned — the reporter's
+`edb4a8b` nvidia-gaming image was built after `#448` (which adds the
+COPY that installs the shim) yet `ujust report` still failed with
+"No such file or directory" for `/usr/local/libexec/utah-image-repo`.
+The most likely cause is the vendor NVIDIA installer wiping
+`/usr/local/libexec/` paths during userspace install; we have not
+verified that locally and want to keep the fallback in place rather than
+discover the root cause by a second user-visible crash. The bug will then
+land in `projectbluefin/common` until the user updates; the warning names
+the fallback and the tracking issue so the user knows what to expect.
 
 Two deliberate differences from Common's `report` recipe: the override sets
 `BONEDIGGER_BRAND="🐦 Utah Bug Report"` so the prompt names Utah rather than
