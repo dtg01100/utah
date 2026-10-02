@@ -41,6 +41,7 @@ class UtahImageRepoTests(unittest.TestCase):
         self.upstream.write_text(
             "#!/usr/bin/bash\n"
             "echo \"upstream $@\" >> \"$CALLS\"\n"
+            "echo \"argc $#\" >> \"$CALLS\"\n"
             "# Echo the --default value back so the test can verify it was\n"
             "# preserved; if --default was missing, fall back to a fixed string.\n"
             "default=\"projectbluefin/upstream-default\"\n"
@@ -130,6 +131,26 @@ class UtahImageRepoTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(),
                          "projectbluefin/upstream-default")
+
+    def test_omits_absent_positionals_instead_of_forwarding_empty_strings(self):
+        # common's resolver reads `${1-${IMAGE_NAME-}}`, so forwarding an
+        # empty "$1" would suppress its IMAGE_NAME/IMAGE_TAG env fallback.
+        result = self.run_shim()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("argc 0", self.upstream_calls_text())
+
+        self.calls.unlink()
+        result = self.run_shim("--default", "projectbluefin/common")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("upstream --default projectbluefin/common\n",
+                      self.upstream_calls_text())
+        self.assertIn("argc 2", self.upstream_calls_text())
+
+        self.calls.unlink()
+        result = self.run_shim("bluefin")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("upstream bluefin\n", self.upstream_calls_text())
+        self.assertIn("argc 1", self.upstream_calls_text())
 
     def test_missing_default_argument_value_is_rejected(self):
         # `--default` without a value is a usage error in both the shim and

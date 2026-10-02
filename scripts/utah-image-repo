@@ -58,13 +58,18 @@ fi
 
 # Forward to common's authoritative resolver, preserving the caller's
 # --default so an unrecognised name still falls back to that, not to
-# common's hard-coded default.
-if [[ -n "$DEFAULT" && -n "$TAG" ]]; then
-    exec "$UBLUE_IMAGE_REPO" --default "$DEFAULT" "$NAME" "$TAG"
-elif [[ -n "$DEFAULT" ]]; then
-    exec "$UBLUE_IMAGE_REPO" --default "$DEFAULT" "$NAME"
-elif [[ -n "$TAG" ]]; then
-    exec "$UBLUE_IMAGE_REPO" "$NAME" "$TAG"
-else
-    exec "$UBLUE_IMAGE_REPO" "$NAME"
+# common's hard-coded default. Omit absent positionals entirely rather
+# than forwarding an empty string: common reads `${1-${IMAGE_NAME-}}`, so
+# an empty "$1" would suppress its IMAGE_NAME/IMAGE_TAG env fallback.
+FORWARD=()
+if [[ -n "$DEFAULT" ]]; then
+    FORWARD+=(--default "$DEFAULT")
 fi
+if [[ -n "$NAME" ]]; then
+    FORWARD+=("$NAME")
+    if [[ -n "$TAG" ]]; then
+        FORWARD+=("$TAG")
+    fi
+fi
+
+exec "$UBLUE_IMAGE_REPO" ${FORWARD[@]+"${FORWARD[@]}"}

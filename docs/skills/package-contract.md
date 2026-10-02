@@ -324,3 +324,12 @@ every other name to Common's authoritative resolver (so non-Utah images
 inheriting from this image still resolve correctly). The shim itself is
 installed by `Containerfile` from `scripts/utah-image-repo` (alongside the
 other `utah-*` helpers) and listed in `just check`'s presence assertion.
+
+Two deliberate differences from Common's `report` recipe: the override sets
+`BONEDIGGER_BRAND="🐦 Utah Bug Report"` so the prompt names Utah rather than
+Bluefin, and it does not forward Common's `BONEDIGGER_VERSION` because
+`bonedigger-report` never reads that variable and it is not in scope for a
+Utah-local recipe. The `--list` description is kept on a single comment line
+immediately above `[group('System')]`; `just` uses only that line, so the
+explanatory block above it must stay separated by a blank line or `ujust
+--list` would print an implementation-comment fragment instead.

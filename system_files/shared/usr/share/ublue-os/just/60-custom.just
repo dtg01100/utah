@@ -73,6 +73,14 @@ enroll-secure-boot-key:
 # hard-coded --default projectbluefin/common wins; the local
 # utah-image-repo shim short-circuits utah* to projectbluefin/utah and
 # forwards every other name to common's authoritative grammar.
+# BONEDIGGER_BRAND rebrands the prompt for Utah; Common's
+# BONEDIGGER_VERSION is intentionally not forwarded because
+# bonedigger-report never reads it and the variable is not in scope here.
+#
+# Keep the blank line above: just uses only the comment line immediately
+# preceding a recipe as its `--list` description.
+
+# Collect a previewed, privacy-respecting report and create an issue directly with gh.
 [group('System')]
 report *args:
     UBLUE_IMAGE_REPO_BIN="/usr/local/libexec/utah-image-repo" \

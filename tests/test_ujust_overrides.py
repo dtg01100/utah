@@ -41,7 +41,8 @@ class UjustOverridesTests(unittest.TestCase):
         # Utah wraps that entry point to make its override import shallower.
         original = self.root / "default.just"
         original.write_text("device-info:\n    exit 99\nchangelogs:\n    exit 99\n"
-                            "enroll-secure-boot-key:\n    exit 99\n")
+                            "enroll-secure-boot-key:\n    exit 99\n"
+                            "report:\n    exit 99\n")
         common = self.root / "00-common.just"
         common.write_text('set allow-duplicate-recipes\n_default:\n    @echo common-default\n'
                           'unrelated:\n    @echo common-unrelated\n'
@@ -154,6 +155,23 @@ class UjustOverridesTests(unittest.TestCase):
         self.assertIn("https://github.com/projectbluefin/utah/issues/395", result.stderr)
         self.assertEqual(self.calls(), "")
 
+    def test_report_override_keeps_a_user_facing_list_description(self):
+        # just uses only the comment line immediately preceding a recipe as
+        # its description, so an implementation comment block ending right
+        # above `[group('System')]` would replace Common's user-facing text
+        # in `ujust --list` with a fragment like "...authoritative grammar.".
+        result = subprocess.run([self.just, "--justfile", str(self.entry), "--list"],
+                                env=self.env, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        line = next((l for l in result.stdout.splitlines()
+                     if l.strip().startswith("report ")), None)
+        self.assertIsNotNone(line, f"report missing from --list; got {result.stdout!r}")
+        self.assertIn("# Collect a previewed, privacy-respecting report", line)
+        for fragment in ("authoritative grammar", "ublue-image-repo", "#446",
+                         "BONEDIGGER"):
+            self.assertNotIn(fragment, line,
+                             "ujust --list must not surface implementation comments")
+
     def test_report_override_runs_bonedigger_with_utah_image_repo(self):
         # projectbluefin/utah#446: ujust report on Utah was falling through
         # common's routing grammar and landing in projectbluefin/common.
@@ -165,7 +183,9 @@ class UjustOverridesTests(unittest.TestCase):
         # shim path is what bonedigger sees at runtime, not the default
         # ublue-image-repo from common. The entry point resolves `report`
         # to Utah's override because the shallower import wins duplicate
-        # handling on just >= 1.56.
+        # handling on just >= 1.56; the staged default.just defines a
+        # competing `report: exit 99` so an override that lost duplicate
+        # resolution fails loudly instead of passing trivially.
         bonedigger_stub = self.root / "usr-libexec-bonedigger-report"
         bonedigger_stub.write_text(
             "#!/usr/bin/bash\n"
@@ -187,8 +207,13 @@ class UjustOverridesTests(unittest.TestCase):
         entry_text = self.entry.read_text()
         self.entry.write_text(entry_text.replace(str(RECIPES), str(patched_recipes)))
 
+        # setUp pre-sets UBLUE_IMAGE_REPO_BIN for the changelogs tests; drop it
+        # here so the stub's `${UBLUE_IMAGE_REPO_BIN:-unset}` really would print
+        # `unset` if the recipe itself failed to export the shim path.
+        env = dict(self.env)
+        env.pop("UBLUE_IMAGE_REPO_BIN", None)
         result = subprocess.run([self.just, "--justfile", str(self.entry), "report"],
-                                env=self.env, text=True, capture_output=True)
+                                env=env, text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = self.calls()
         # The stub is what the recipe actually executed, so its presence in
