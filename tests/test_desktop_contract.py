@@ -522,6 +522,118 @@ class GdmGreeterLogoTests(unittest.TestCase):
         self.assertEqual(len(active_lines), 2, f"unexpected active lines: {active_lines}")
 
 
+class FwupdRefreshDropInTests(unittest.TestCase):
+    """fwupd-refresh.service ships with DynamicUser=yes and CacheDirectory=fwupdmgr
+    on Fedora/Hummingbird. The combination triggers a pre-existing-public ->
+    /var/cache/private migration at every boot; in this bootc image the
+    rename returns EACCES (a policy denial on /var/cache, not a plain-ownership
+    problem) and the unit exits 1, so firmware metadata never refreshes (#385).
+
+    The drop-in at
+    system_files/shared/usr/lib/systemd/system/fwupd-refresh.service.d/
+    binds the unit to a static user (fwupd-refresh) AND sets DynamicUser=no
+    so the migration code in systemd is skipped, AND re-asserts the
+    hardening directives that DynamicUser=yes would have implied so the
+    drop-in preserves the same posture. The user is allocated by the
+    sysusers.d fragment at
+    system_files/shared/usr/lib/sysusers.d/utah-fwupd-refresh.conf.
+    """
+
+    DROP_IN = ROOT / "system_files/shared/usr/lib/systemd/system/fwupd-refresh.service.d/10-utah-fwupd-refresh-user.conf"
+    SYSUSERS = ROOT / "system_files/shared/usr/lib/sysusers.d/utah-fwupd-refresh.conf"
+
+    def test_drop_in_exists_and_overrides_dynamic_user(self):
+        self.assertTrue(self.DROP_IN.is_file(), f"missing drop-in at {self.DROP_IN}")
+        text = self.DROP_IN.read_text()
+        # The drop-in must declare [Service] and bind the unit to a fixed
+        # user so the migration path in systemd (DynamicUser=yes +
+        # CacheDirectory=fwupdmgr) is skipped.
+        self.assertIn("[Service]", text)
+        self.assertIn("User=fwupd-refresh", text)
+        self.assertIn("Group=fwupd-refresh", text)
+        # DynamicUser=no is the load-bearing directive: systemd's
+        # exec_directory_is_private() gates the pre-existing-public ->
+        # /var/cache/private migration on context->dynamic_user alone,
+        # not on whether User= is set (User= + DynamicUser=yes is a
+        # legal systemd.exec(5) combination). Without DynamicUser=no the
+        # migration code still runs and the unit still fails the same
+        # way. Comments may still mention DynamicUser=yes for context,
+        # but only directive lines (no leading '#') are checked here.
+        directive_lines = [
+            line for line in text.splitlines()
+            if line and not line.lstrip().startswith("#")
+        ]
+        self.assertTrue(
+            any(line.strip() == "DynamicUser=no" for line in directive_lines),
+            "drop-in must set DynamicUser=no so the migration code is skipped",
+        )
+
+    def test_drop_in_documents_the_bug(self):
+        text = self.DROP_IN.read_text()
+        # The comment must cite the actual symptom so a future reader can
+        # verify the override still addresses it.
+        self.assertIn("CacheDirectory=fwupdmgr", text)
+        self.assertIn("/var/cache/private/fwupdmgr", text)
+        self.assertIn("DynamicUser=yes", text)
+        self.assertIn("#385", text)
+
+    def test_sysusers_entry_allocates_the_user(self):
+        self.assertTrue(self.SYSUSERS.is_file(), f"missing sysusers fragment at {self.SYSUSERS}")
+        text = self.SYSUSERS.read_text()
+        # The active line must create the user with auto-allocated UID/GID.
+        # systemd-sysusers.d format: 'TYPE NAME ID GECOS [HOME [SHELL]]'.
+        # The GECOS field is quoted and may contain spaces, so split with
+        # maxsplit=3 (keeps the rest of the line as a single field).
+        active = [line for line in text.splitlines() if line and not line.lstrip().startswith("#")]
+        self.assertEqual(len(active), 1, "sysusers fragment must have exactly one active line")
+        fields = active[0].split(None, 3)
+        self.assertEqual(fields[0], "u")
+        self.assertEqual(fields[1], "fwupd-refresh")
+        self.assertEqual(fields[2], "-", "UID/GID must be auto-allocated, not pinned")
+        self.assertIn("Firmware", fields[3])
+        # The fragment must reference the drop-in it serves so the pair
+        # cannot be deleted independently without leaving an orphan line.
+        self.assertIn("10-utah-fwupd-refresh-user.conf", text)
+        self.assertIn("#385", text)
+
+    def test_drop_in_and_sysusers_agree_on_user_name(self):
+        # Catch the case where one file is renamed and the other is not.
+        drop_in_user = None
+        for line in self.DROP_IN.read_text().splitlines():
+            stripped = line.strip()
+            if stripped.startswith("User="):
+                drop_in_user = stripped.split("=", 1)[1].strip()
+                break
+        sysusers_lines = self.SYSUSERS.read_text().splitlines()
+        active = [line for line in sysusers_lines if line and not line.lstrip().startswith("#")]
+        self.assertEqual(drop_in_user, active[0].split(None, 3)[1])
+
+    def test_drop_in_reasserts_dynamic_user_hardening(self):
+        # DynamicUser=yes implies NoNewPrivileges=yes, PrivateTmp=yes,
+        # RemoveIPC=yes, RestrictSUIDSGID=yes, and ProtectSystem=strict
+        # (systemd.exec(5); upstream's static-user branch in
+        # data/motd/meson.build bumps ProtectSystem=strict). DynamicUser=no
+        # does not imply them, so the drop-in must set them explicitly as
+        # directive lines (comments don't count) to preserve the same
+        # hardening posture.
+        text = self.DROP_IN.read_text()
+        directive_lines = [
+            line.strip() for line in text.splitlines()
+            if line and not line.lstrip().startswith("#")
+        ]
+        for required in (
+            "DynamicUser=no",
+            "NoNewPrivileges=yes",
+            "PrivateTmp=yes",
+            "RemoveIPC=yes",
+            "RestrictSUIDSGID=yes",
+            "ProtectSystem=strict",
+        ):
+            self.assertIn(
+                required, directive_lines,
+                f"drop-in must set {required} so the hardening posture is preserved",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

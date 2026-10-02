@@ -97,8 +97,9 @@ def write_overlay(
         toml_section("services", services or []),
         toml_section("unavailable", unavailable or []),
     ]
+    own_majors = {"gtk4": "4", "libadwaita": "1"}
     versions = gnome_versions or {
-        "gtk4": "4", "libadwaita": "1", **{pkg: "51" for pkg in (gnome or [])}
+        pkg: own_majors.get(pkg, "51") for pkg in (gnome or [])
     }
     sections.append("[gnome.versions]\n")
     for name, major in versions.items():
@@ -309,6 +310,16 @@ class CheckModeTests(unittest.TestCase):
         self.assertIn("0 NVIDIA packages", plain.stdout)
         self.assertIn("1 NVIDIA packages", nvidia.stdout)
         self.assertIn("1 NVIDIA packages", gaming.stdout)
+
+    def test_factory_package_outside_gnome_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            manifest = write_manifest(directory, ["bash"])
+            overlay = write_overlay(directory, hardware=["linux-firmware"], factory=["linux-firmware"])
+            result = self.run_check(manifest, overlay)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Factory package 'linux-firmware'", result.stderr)
+        self.assertIn("[gnome]", result.stderr)
 
     def test_a_duplicate_across_sections_is_rejected(self) -> None:
         """A package listed twice would be verified twice and counted twice."""
@@ -1027,13 +1038,27 @@ class SupplyChainTests(unittest.TestCase):
         self.assertTrue(any("approved" in e for e in errors))
 
     def test_verify_repository_policy_skips_builder_only_files(self) -> None:
-        """A repo file marked builder-only is not enforced at build time."""
-        directory = Path(tempfile.mkdtemp())
-        path = directory / "fedora-44.repo"
-        path.write_text("# builder-only: true\n[fedora]\nbaseurl=https://a.example.com/$basearch\n")
-        errors = self.module.verify_repository_policy(
-            directory, set(), check_mode=True, expected_baseurls=None)
-        self.assertEqual(errors, [])
+        """A marker authorizes no skip unless the file is exclusively builder-copied."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            directory = root / "packages"
+            directory.mkdir()
+            (directory / "fedora-44.repo").write_text(
+                "# builder-only: true\n[fedora]\nbaseurl=https://a.example.com/$basearch\n")
+            containerfile = root / "Containerfile"
+            containerfile.write_text("FROM base AS builder\nCOPY packages/fedora-44.repo /etc/yum.repos.d/\nFROM base\n")
+            errors = self.module.verify_repository_policy(
+                directory, set(), check_mode=True, expected_baseurls=None)
+            self.assertEqual(errors, [])
+            containerfile.write_text(containerfile.read_text() + "COPY packages/*.repo /etc/yum.repos.d/\n")
+            errors = self.module.verify_repository_policy(
+                directory, set(), check_mode=True, expected_baseurls=None)
+            self.assertTrue(any("Fedora" in error for error in errors), errors)
+            containerfile.unlink()
+            errors = self.module.verify_repository_policy(
+                directory, set(), check_mode=True, expected_baseurls=None)
+            self.assertTrue(any("exclusive builder COPY" in error for error in errors), errors)
+
 
     def test_verify_repository_policy_skips_disabled_repos(self) -> None:
         directory = Path(tempfile.mkdtemp())

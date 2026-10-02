@@ -380,7 +380,10 @@ def main() -> int:
     print(f"Fedora release is {major}", flush=True)
     for pkg in section(overlay, "unavailable"):
         # Loud, not silent: a parity gap the operator should see in the log.
-        print(f"NOTE: {pkg} has no source in Utah's repositories and is skipped (see packages/utah.toml)")
+        # Not "skipped": [unavailable] also covers image-level gaps that were
+        # never part of the install request, so say what is true of both kinds
+        # -- the name is known-missing parity debt, not a dropped request.
+        print(f"NOTE: {pkg} is a tracked parity gap with no source in Utah's repositories and is not installed (see packages/utah.toml)")
 
     # Bluefin excludes PackageKit from its bulk install; an image-based system
     # must not carry a second package manager that can write to /usr.

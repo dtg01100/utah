@@ -16,6 +16,7 @@ The audit's contract:
 
 import contextlib
 import gzip
+import hashlib
 import importlib.util
 import io
 import json
@@ -111,6 +112,111 @@ class BluefinManifestTests(unittest.TestCase):
             """)
         self.assertEqual(audit.bluefin_packages(text), {"coreutils"})
 
+    def test_bluefin_packages_picks_up_new_fedora_v_section_without_enumeration(self):
+        # A future [fedora_v45] (or any per-Fedora-version section Bluefin
+        # adds) must be in the union automatically; enumerating versions
+        # in bluefin_packages() makes the audit miss the gap the day
+        # Fedora ships a new release.
+        text = textwrap.dedent("""\
+            [fedora]
+            packages = ["coreutils"]
+            [fedora_v45]
+            packages = ["future-thing"]
+            [fedora_v44]
+            packages = ["evolution"]
+            """)
+        self.assertEqual(
+            audit.bluefin_packages(text),
+            {"coreutils", "future-thing", "evolution"},
+        )
+
+
+class HummingbirdRepomdTests(unittest.TestCase):
+    """The Hummingbird repomd parser must read <checksum>, not <open-checksum>.
+
+    A gzipped primary.xml.gz ships both a <checksum> for the compressed
+    bytes (the ones the script just downloaded) and an <open-checksum>
+    for the uncompressed form. A bare endswith("checksum") match picks up
+    the open-checksum (iteration order) and fails every fetch against the
+    live repository; matching the local XML name is what keeps the gate
+    green.
+    """
+
+    def _fetch(self, repomd_xml: bytes, primary_bytes: bytes):
+        """Drive `fetch_hummingbird_repodata` against mocked network I/O."""
+        from unittest.mock import patch
+
+        def fake_urlopen(url, *args, **kwargs):
+            if url.endswith("repomd.xml"):
+                return io.BytesIO(repomd_xml)
+            if url.endswith("primary.xml.gz"):
+                return io.BytesIO(primary_bytes)
+            raise AssertionError(f"unexpected fetch: {url}")
+
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(audit.urllib.request, "urlopen",
+                             side_effect=fake_urlopen), \
+                patch.object(audit, "HUMMINGBIRD_REPO_FILES",
+                             [Path(tmp) / "hummingbird.repo"]):
+            (Path(tmp) / "hummingbird.repo").write_text(
+                "[public-hummingbird-x86_64-rpms]\n"
+                "baseurl = https://packages.redhat.com/api/pulp-content/public-hummingbird/x86_64/\n"
+            )
+            destination = Path(tmp) / "out"
+            destination.mkdir()
+            return audit.fetch_hummingbird_repodata(destination)
+
+    def test_picks_compressed_checksum_not_open_checksum(self) -> None:
+        """The parser takes <checksum>, not <open-checksum>.
+
+        Both elements are present in the repomd. We construct primary_bytes
+        so that sha256(primary_bytes) matches the <checksum> value we put
+        in the repomd; with the local-name fix the function returns cleanly,
+        with the broken endswith("checksum") match it would have read the
+        <open-checksum> value, computed sha256(primary_bytes), and raised
+        'Hummingbird primary.xml failed checksum'.
+        """
+        primary_bytes = b"compressed-primary-bytes-for-checksum-test"
+        target_digest = hashlib.sha256(primary_bytes).hexdigest()
+        repomd = textwrap.dedent(f"""\
+            <?xml version="1.0" encoding="UTF-8"?>
+            <repomd xmlns="http://linux.duke.edu/metadata/repo">
+              <data type="primary">
+                <location href="repodata/primary.xml.gz"/>
+                <checksum type="sha256">{target_digest}</checksum>
+                <open-checksum type="sha256">feedface00000000000000000000000000000000000000000000000000000000</open-checksum>
+              </data>
+            </repomd>
+            """).encode()
+        baseurl, basename = self._fetch(repomd, primary_bytes)
+        self.assertTrue(basename.endswith("primary.xml.gz"))
+        self.assertIn("packages.redhat.com", baseurl)
+
+    def test_rejects_open_checksum_when_only_open_checksum_matches(self) -> None:
+        """The function fails loud if <checksum> disagrees with the live sha256.
+
+        If the parser were still picking <open-checksum>, the broken branch
+        would have read the live sha256 of `primary_bytes`, found it matched,
+        and silently returned. With the local-name fix the parser takes the
+        zero-digest <checksum>, finds it does NOT match the live sha256,
+        and raises ValueError.
+        """
+        primary_bytes = b"uncompressed-bytes-for-open-checksum"
+        live_sha = hashlib.sha256(primary_bytes).hexdigest()
+        repomd = textwrap.dedent(f"""\
+            <?xml version="1.0" encoding="UTF-8"?>
+            <repomd xmlns="http://linux.duke.edu/metadata/repo">
+              <data type="primary">
+                <location href="repodata/primary.xml.gz"/>
+                <checksum type="sha256">{"0" * 64}</checksum>
+                <open-checksum type="sha256">{live_sha}</open-checksum>
+              </data>
+            </repomd>
+            """).encode()
+        with self.assertRaises(ValueError) as ctx:
+            self._fetch(repomd, primary_bytes)
+        self.assertIn("checksum", str(ctx.exception).lower())
+
 
 class GapTests(unittest.TestCase):
     def test_gap_names_exclude_every_overlay_section_and_unavailable(self):
@@ -174,7 +280,7 @@ class BaselineTests(unittest.TestCase):
             "factory-built": ["modem"],
             "nowhere": ["obscure", "libgda"],
         }
-        msgs = audit.compare_to_baseline(new, baseline)
+        msgs = audit.compare_to_baseline(new, baseline, "deadbeef", "registry/name@sha256:abc")
         self.assertEqual(msgs, ["nowhere: +1 ['libgda']"])
 
     def test_compare_silent_when_no_growth(self):
@@ -188,7 +294,9 @@ class BaselineTests(unittest.TestCase):
             "factory-built": ["router"],
             "nowhere": ["obscure"],
         }
-        self.assertEqual(audit.compare_to_baseline(new, baseline), [])
+        self.assertEqual(
+            audit.compare_to_baseline(new, baseline, "deadbeef", "registry/name@sha256:abc"), []
+        )
 
     def test_compare_reports_shrink_as_noop(self):
         # A name dropping from a partition because the operator closed
@@ -203,7 +311,9 @@ class BaselineTests(unittest.TestCase):
             "factory-built": ["modem"],
             "nowhere": ["obscure"],
         }
-        self.assertEqual(audit.compare_to_baseline(new, baseline), [])
+        self.assertEqual(
+            audit.compare_to_baseline(new, baseline, "deadbeef", "registry/name@sha256:abc"), []
+        )
 
     def test_compare_reports_regression_in_every_partition(self):
         # A brand-new name in any partition is a regression; the gate
@@ -219,7 +329,7 @@ class BaselineTests(unittest.TestCase):
             "factory-built": ["modem", "modem-new"],
             "nowhere": ["obscure", "nowhere-new"],
         }
-        msgs = audit.compare_to_baseline(new, baseline)
+        msgs = audit.compare_to_baseline(new, baseline, "deadbeef", "registry/name@sha256:abc")
         self.assertEqual(len(msgs), 3)
         self.assertIn("hummingbird-available: +1 ['shell-new']", msgs)
         self.assertIn("factory-built: +1 ['modem-new']", msgs)
@@ -434,6 +544,136 @@ class RecipeArgForwardingTests(unittest.TestCase):
         body = self._rendered_body("check-audit-parity", "--ref=HEAD")
         self.assertIn("for arg in --ref=HEAD", body)
         self.assertNotIn('"$@"', body)
+
+
+class StaleBaselineTests(unittest.TestCase):
+    # The gate this issue fixes: compare_to_baseline must fail on a baseline
+    # captured against a different Bluefin ref or factory pin, not pass
+    # silently against an unchanged package set.
+
+    BASELINE = {
+        "ref": "old-bluefin",
+        "factory_ref": "old-factory",
+        "hummingbird-available": ["a", "b"],
+        "factory-built": ["c"],
+        "nowhere": [],
+    }
+
+    # The same package set a later audit reads.
+    SAME = {
+        "hummingbird-available": ["a", "b"],
+        "factory-built": ["c"],
+        "nowhere": [],
+    }
+
+    def test_matching_refs_pass_with_no_messages(self):
+        self.assertEqual(
+            audit.compare_to_baseline(self.SAME, self.BASELINE, "old-bluefin", "old-factory"),
+            [],
+        )
+
+    def test_a_bluefin_ref_bump_is_reported_not_a_clean_run(self):
+        # The bug: same packages, only the Bluefin ref changed. Without the
+        # ref comparison this returns [] and the stale baseline passes.
+        msgs = audit.compare_to_baseline(
+            self.SAME, self.BASELINE, "new-bluefin", "old-factory"
+        )
+        self.assertEqual(len(msgs), 1)
+        self.assertIn("stale baseline: ref", msgs[0])
+        self.assertIn("new-bluefin", msgs[0])
+
+    def test_a_factory_pin_bump_is_reported(self):
+        msgs = audit.compare_to_baseline(
+            self.SAME, self.BASELINE, "old-bluefin", "new-factory"
+        )
+        self.assertEqual(len(msgs), 1)
+        self.assertIn("factory_ref", msgs[0])
+
+    def test_both_ref_and_factory_bumps_are_both_reported(self):
+        msgs = audit.compare_to_baseline(
+            self.SAME, self.BASELINE, "new-bluefin", "new-factory"
+        )
+        self.assertEqual(len(msgs), 2)
+        self.assertTrue(all("stale baseline" in m for m in msgs))
+
+    def test_an_old_baseline_without_meta_is_not_flagged_stale(self):
+        # A baseline written before the ref/factory_ref meta existed has no
+        # keys to compare; the gate must not invent a mismatch against them.
+        legacy = {k: v for k, v in self.BASELINE.items() if k not in ("ref", "factory_ref")}
+        self.assertEqual(
+            audit.compare_to_baseline(self.SAME, legacy, "any-ref", "any-factory"), []
+        )
+
+    def test_a_real_regression_still_fails_when_refs_match(self):
+        grew = dict(self.SAME)
+        grew["hummingbird-available"] = ["a", "b", "brand-new"]
+        msgs = audit.compare_to_baseline(
+            grew, self.BASELINE, "old-bluefin", "old-factory"
+        )
+        self.assertEqual(len(msgs), 1)
+        self.assertIn("brand-new", msgs[0])
+
+    def test_a_stale_baseline_is_reported_before_any_partition_growth(self):
+        # The stale-baseline verdict must never be masked by, or buried under,
+        # a growth report: it comes first in the message list.
+        grew = dict(self.SAME)
+        grew["nowhere"] = ["brand-new"]
+        msgs = audit.compare_to_baseline(
+            grew, self.BASELINE, "new-bluefin", "old-factory"
+        )
+        self.assertIn("stale baseline: ref", msgs[0])
+        self.assertEqual(len(msgs), 2)
+
+    def _run_check(self, parts: dict, ref: str, factory_ref: str) -> tuple[int, str]:
+        """Run cmd_check against BASELINE with the network stubbed out."""
+        from argparse import Namespace
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            baseline_file = Path(tmp) / "audit-baseline.json"
+            baseline_file.write_text(json.dumps(self.BASELINE))
+            saved = audit.BASELINE
+            audit.BASELINE = baseline_file
+            err = io.StringIO()
+            try:
+                with patch.object(audit, "fetch_partition") as fetch, \
+                        contextlib.redirect_stderr(err), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    fetch.return_value = (ref, parts, None, None, factory_ref, None)
+                    code = audit.cmd_check(Namespace(ref=None))
+            finally:
+                audit.BASELINE = saved
+        return code, err.getvalue()
+
+    def test_check_trailer_on_a_stale_only_verdict_does_not_claim_growth(self):
+        # The operator text must match the verdict: nothing grew, the
+        # baseline was captured against a different ref, and the only
+        # remedy is to re-record it.
+        code, err = self._run_check(self.SAME, "new-bluefin", "old-factory")
+        self.assertEqual(code, 1)
+        self.assertNotIn("partitions grew", err)
+        self.assertIn("captured against different refs", err)
+        self.assertIn("--write", err)
+
+    def test_check_trailer_on_growth_alone_still_says_partitions_grew(self):
+        grew = dict(self.SAME)
+        grew["nowhere"] = ["brand-new"]
+        code, err = self._run_check(grew, "old-bluefin", "old-factory")
+        self.assertEqual(code, 1)
+        self.assertIn("partitions grew past", err)
+        self.assertNotIn("captured against different refs", err)
+
+    def test_check_trailer_reports_both_when_stale_and_grown(self):
+        grew = dict(self.SAME)
+        grew["nowhere"] = ["brand-new"]
+        code, err = self._run_check(grew, "new-bluefin", "new-factory")
+        self.assertEqual(code, 1)
+        self.assertIn("is stale and partitions grew past it", err)
+
+    def test_check_is_silent_and_passes_when_refs_match_and_nothing_grew(self):
+        code, err = self._run_check(self.SAME, "old-bluefin", "old-factory")
+        self.assertEqual(code, 0)
+        self.assertEqual(err, "")
 
 
 if __name__ == "__main__":
