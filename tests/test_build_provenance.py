@@ -77,7 +77,7 @@ class BuildProvenanceContainerfileTests(unittest.TestCase):
         # what the OCI manifest ships. Both come from the same env vars,
         # so a single RUN that invokes utah-write-build-manifest with them
         # is enough to keep them in lockstep.
-        self.assertIn("/usr/local/libexec/utah-write-build-manifest", self.text)
+        self.assertIn("/usr/libexec/utah-write-build-manifest", self.text)
         self.assertIn('BUILD_COMMIT="${BUILD_COMMIT}"', self.text)
         self.assertIn('PACKAGE_IMAGE_SHA="${PACKAGE_IMAGE_SHA}"', self.text)
 

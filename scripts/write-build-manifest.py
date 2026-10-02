@@ -14,11 +14,11 @@ What it records:
 - `commit`: the full Utah commit SHA the build was invoked from.
 - `package_image`: the package factory reference (without the digest).
 - `package_image_sha`: the exact `sha256:` digest the transaction resolved.
-  The Containerfile's final stage re-declares `ARG PACKAGE_IMAGE_SHA` bare,
-  so it inherits whatever `FROM ${PACKAGE_IMAGE_REF}` consumed and is fed
-  here unchanged; no runner step passes it. That is what keeps the sidecar
-  from naming a digest the build did not install (#371) -- `sha256:0f04...`
-  next to an older `commit` is the mismatch signature.
+  The final stage inherits the global pin through a bare ARG declaration;
+  build-ghcr leaves that pin unchanged. build-local passes its local package
+  reference and digest explicitly, using `unknown` when no registry digest
+  exists. A manual `PACKAGE_IMAGE_REF` override must also supply the matching
+  `PACKAGE_IMAGE` and `PACKAGE_IMAGE_SHA` build arguments.
 - `version`: the value baked into `org.opencontainers.image.version`, so the
   manifest and the label can be diff'd in one place.
 

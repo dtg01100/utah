@@ -16,10 +16,25 @@ default:
 # under tests/ that holds test modules. Bare `unittest discover` rooted at
 # tests/ skipped subdirectories such as tests/unit/ silently -- it reported
 # OK whether the tests there passed, failed, or never ran.
+#
+# The third-party modules the suite needs are declared in
+# tests/requirements.txt, not installed silently here. A quiet `pip install ||
+# true` hid its own failure: the modules stayed missing and the suite reported
+# 46 errors that read like regressions instead of one message naming the
+# dependency.
 test:
     #!/usr/bin/env bash
     set -euo pipefail
-    pip install --quiet pyyaml 2>/dev/null || true
+    missing=()
+    for module in yaml jsonschema; do
+        python3 -c "import ${module}" 2>/dev/null || missing+=("${module}")
+    done
+    if [ ${#missing[@]} -gt 0 ]; then
+        echo "host test dependencies missing: ${missing[*]}" >&2
+        echo "they are declared in tests/requirements.txt; install them with:" >&2
+        echo "    pip install -r tests/requirements.txt" >&2
+        exit 1
+    fi
     python3 tests/run_suite.py
 
 check:
@@ -56,6 +71,8 @@ check:
     test -f scripts/verify-gnome-extensions.py
     test -f scripts/mirror-shim.sh
     test -f scripts/install-v4l2loopback.sh
+    test -f scripts/image-repo.sh
+    test -f scripts/write-build-manifest.py
     test -f packages/RPM-GPG-KEY-fedora-44-primary
     test -f contracts/bluefin-desktop.toml
     # The reusable image workflow checks out this repository without
@@ -159,7 +176,7 @@ check-desktop-contract image_ref="localhost/utah:testing":
       -v "$PWD/scripts/verify-desktop-contract.py:/tmp/verify-desktop-contract.py:ro" \
       "{{ image_ref }}" /tmp/verify-desktop-contract.py /tmp/bluefin-desktop.toml
     podman run --rm --entrypoint /usr/bin/python3 \
-      "{{ image_ref }}" /usr/local/libexec/utah-verify-gnome-extensions
+      "{{ image_ref }}" /usr/libexec/utah-verify-gnome-extensions
 
 # Fail fast when a contract package is in none of the repositories the image
 # actually enables, instead of discovering it twenty minutes into a build.
@@ -255,19 +272,21 @@ baselines bluefin="ghcr.io/ublue-os/bluefin:stable" utah="ghcr.io/projectbluefin
 #   just audit-bluefin-parity --write        # record the new baseline after printing
 #   just audit-bluefin-parity --check        # compare against the recorded baseline
 #
-# Pass `--ref <sha|tag|branch>` to audit against a Bluefin revision that
+# Pass `--ref=<sha|tag|branch>` to audit against a Bluefin revision that
 # is not yet committed to packages/.bluefin-parity-ref. The default is the
 # pinned SHA in that file.
 #
-# Args are forwarded as `--key=value` because `just` does not allow
-# bare `--flag value` to reach a recipe body without going through a
-# parameter binding. The forwarding script re-parses them.
+# Args are interpolated into the body with `{{args}}`, not read from `$@`: a
+# `just` shebang recipe receives no positional parameters (`$# = 0`), so a
+# `"$@"` loop never sees the flags. Value flags use the `--key=value` form
+# because that is all the forwarding script's `case` matches; the flags are
+# re-parsed there.
 audit-bluefin-parity *args:
     #!/usr/bin/env bash
     set -euo pipefail
     subcommand="run"
     forward=()
-    for arg in "$@"; do
+    for arg in {{args}}; do
       case "$arg" in
         --check) subcommand="check" ;;
         --write) forward+=(--write) ;;
@@ -284,7 +303,7 @@ check-audit-parity *args:
     #!/usr/bin/env bash
     set -euo pipefail
     forward=()
-    for arg in "$@"; do
+    for arg in {{args}}; do
       case "$arg" in
         --ref=*) forward+=("$arg") ;;
         *) echo "check-audit-parity: unknown argument: $arg" >&2; exit 64 ;;

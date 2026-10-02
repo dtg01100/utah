@@ -3,7 +3,7 @@
 <!-- BEGIN E2E VERIFICATION -->
 [![Verified ISO desktop](docs/verification/screenshots/installed-fastfetch.png)](docs/verification/README.md)
 
-*LUKS ISO test passed for commit `815ea44d229e`. [CI run](https://github.com/projectbluefin/utah/actions/runs/36515045194); [screenshots and provenance](docs/verification/README.md).*
+*LUKS ISO test passed for commit `4d5853b05160`. [CI run](https://github.com/projectbluefin/utah/actions/runs/37031124031); [screenshots and provenance](docs/verification/README.md).*
 <!-- END E2E VERIFICATION -->
 
 †Utahraptor ostrommaysi
@@ -67,11 +67,15 @@ than being noticed later.
 | | count |
 | --- | --- |
 | Bluefin contract installed | **61** |
-| Utah additions (GNOME 51, base-image parity, device firmware, desktop services) | 86 |
-| Genuinely unavailable | **6** |
+| Utah additions (GNOME 51, base-image parity, device firmware, desktop services) | 88 |
+| Genuinely unavailable | **7** |
 
 The install writes its resolved list to `/usr/share/utah/contract.txt` and the
-verify step asserts *that file*, so the two cannot disagree. These counts are
+verify step asserts *that file*, so the two cannot disagree. The unavailable
+row is not limited to the copied contract: it also holds image-level parity
+gaps — names Bluefin's published image ships from a build file outside
+`base.toml`, recorded in `baselines/bluefin/rpms.tsv` and triaged in
+`baselines/triage.toml` (`nvtop` is the current example). These counts are
 generated from `packages/bluefin.toml` and `packages/utah.toml`
 (`scripts/generate-site-data.py`, `site/data/packages.json`); `just check`
 fails if this table drifts from that output (`scripts/check-doc-counts.py`).
@@ -127,14 +131,14 @@ This is the honest list, and it is why the label above says pre-alpha.
   `bootupd`. Switchers can confirm the ESP is being maintained with
   `bootctl status` (compare `Current` against `Available`) rather than
   `bootupctl status` (links #363).
-- **Wi-Fi needs a package the factory has not built yet.** The image ships no
-  device firmware of its own — the bootable base carries none, and Bluefin only
-  appears to because Fedora's Silverblue base supplies `linux-firmware`. `[hardware]`
-  in `packages/utah.toml` now installs it, so a wireless driver can load its
-  blob. That is necessary but not sufficient: Hummingbird's `NetworkManager-wifi`
-  requires `wireless-regdb` and a supplicant, none of which exists in any
-  enabled repository, so NetworkManager still does not manage the interface
-  (`utah-packages#136`; the pin that would carry them is `#126`).
+- **Wi-Fi package coverage is not hardware validation.** `[hardware]` in
+  `packages/utah.toml` installs `linux-firmware` and explicit Intel wireless
+  firmware packages so drivers can load their device blobs. `[parity]` installs
+  Hummingbird's `NetworkManager-wifi` together with the factory's
+  `wpa_supplicant`, `wireless-regdb` and `iw`; the former factory dependency
+  blocker is resolved. Verify device detection and network association on
+  the target hardware rather than treating the package list as proof that
+  every radio works.
 - **The NVIDIA and gaming flavors are unproven.** The OGC kernel compiles with
   `sched_ext` and `binderfs` genuinely enabled, and the NVIDIA open module
   compiles for the base kernel. The module against the OGC kernel, the driver
