@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-10-01",
+  "generated_at": "2026-10-02",
   "generator": "scripts/generate-site-data.py",
   "groups": [
     {
@@ -227,7 +227,9 @@
       "name": "firefox"
     },
     {
-      "issues": [],
+      "issues": [
+        419
+      ],
       "name": "fish"
     },
     {

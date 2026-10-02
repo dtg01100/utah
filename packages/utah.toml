@@ -339,8 +339,8 @@ packages = [
 #
 # fish
 #   Deliberately excluded, not blocked: the factory builds it and it resolves,
-#   but Bluefin classic shipping every shell was a mistake Utah does not repeat
-#   (bare-metal audit #382). Users who want fish get it from Homebrew.
+#   but Bluefin classic shipping every shell was a mistake Utah does not repeat.
+#   Users who want fish get it from Homebrew. Tracked by #419.
 #
 # firefox
 #   Neither enabled repository provides the firefox RPM: the factory does
