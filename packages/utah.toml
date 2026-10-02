@@ -369,12 +369,29 @@ packages = [
 #
 # pipewire-libs-extra is supplied by the pinned September 10 factory candidate
 # and returns to the install contract (#35).
+#
+# nvtop
+#   Interactive GPU process monitor (htop-like for NVIDIA / AMD / Intel). The
+#   published Bluefin image carries it because it inherits the package from
+#   Fedora's Silverblue base; that inheritance stops at Hummingbird's
+#   server-shaped bootable base, which has no GUI metapackages. The package
+#   exists in Fedora 44 proper (3.3.2-1.fc44, verified from
+#   dl.fedoraproject.org/pub/fedora/linux/releases/44/Everything/x86_64/os/
+#   Packages/n/nvtop-3.3.2-1.fc44.x86_64.rpm) but Utah's install transaction
+#   resolves against `utah-packages` and `public-hummingbird-x86_64-rpms`
+#   only -- Fedora 44 is a builder-stage toolchain in Containerfile.kernel,
+#   not a runtime source. The Homebrew formula is deprecated upstream
+#   (formulae.brew.sh/formula/nvtop) and slated for disablement on
+#   2027-09-17, which is what surfaces the request on the NVIDIA flavor
+#   (#451). Add `nvtop` to `[parity]` once utah-packages#311 publishes an
+#   Hummingbird-targeted build.
 packages = [
     "grub2-efi-x64-cdboot",
     "anaconda-live",
     "evolution-ews-core",
     "firefox",
     "fish",
+    "nvtop",
     "slitherer",
 ]
 

@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-10-01",
+  "generated_at": "2026-10-02",
   "generator": "scripts/generate-site-data.py",
   "groups": [
     {
@@ -207,7 +207,7 @@
   ],
   "totals": {
     "installed": 149,
-    "unavailable": 6
+    "unavailable": 7
   },
   "unavailable": [
     {
@@ -235,6 +235,10 @@
         253
       ],
       "name": "grub2-efi-x64-cdboot"
+    },
+    {
+      "issues": [],
+      "name": "nvtop"
     },
     {
       "issues": [
