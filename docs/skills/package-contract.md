@@ -152,8 +152,13 @@ install-set check it attests the supply chain the image is composed from
 - **Build provenance** (`generate_provenance_report`) — the resolved
   package-origin/NEVRA data is written as JSON plus a human-readable report to
   `$UTAH_REPORT_DIR` (default `/usr/share/utah`), retaining the image flavor,
-  build timestamp (from `SOURCE_DATE_EPOCH` or the sentinel epoch), per-package
-  origin and section, and the allowed-repository list.
+  the factory pin read from the `# factory-pin:` stamp in
+  `/etc/yum.repos.d/utah-packages.repo`, the `BASE_IMAGE` reference and its
+  digest, per-package origin and section, and the allowed-repository list. The
+  build timestamp is recorded only when `SOURCE_DATE_EPOCH` is exported;
+  otherwise `timestamp` is null and `timestamp_source` is `unset`. A sentinel
+  epoch used to be stamped instead, which asserted a build date that was never
+  true.
 
 ## Supply-chain download verification
 

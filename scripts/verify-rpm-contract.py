@@ -7,6 +7,9 @@ GNOME packages carry the promised major version and an approved factory
 resolve from an unapproved Fedora repository; the system exposes only the
 runtime repositories the manifest allows; and the resolved package-origin/NEVRA
 set is retained as a report with build provenance.
+
+Mirrors assert_packages_present from projectbluefin/bluefin's
+build_files/shared/package-lib.sh: name every missing package, once.
 """
 
 from __future__ import annotations
@@ -23,13 +26,28 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+# The NVIDIA userspace no longer arrives as RPMs. UBlue's akmods bundle used to
+# supply nvidia-driver, nvidia-driver-cuda and nvidia-container-toolkit, but it
+# publishes nothing for Hummingbird's kernel, so install-nvidia.sh builds the
+# open module from NVIDIA's own source and installs the matching userspace from
+# the same payload. Those files are what the image needs; the RPM names were
+# only ever how they happened to arrive.
+#
+# nvidia-container-toolkit still arrives as an RPM, from NVIDIA's own repository
+# rather than from the akmods bundle, so it is asserted by name. It was recorded
+# here as a real loss on the reasoning that the bundle was unusable; the bundle
+# was one source, not the only one.
 NVIDIA_PACKAGES = (
     "nvidia-container-toolkit",
 )
 
 CONTRACT_PATH = "/usr/share/utah/contract.txt"
 DEFAULT_REPORT_DIR = "/usr/share/utah"
-DEFAULT_BUILD_EPOCH = 1104240000  # 2004-12-28T13:20:00Z sentinel
+# The factory pin travels on the image as a stamp in the repository file, which
+# is what the report quotes: it says which package factory the NEVRAs came from
+# without needing a build argument plumbed through every stage.
+FACTORY_REPO_PATH = "/etc/yum.repos.d/utah-packages.repo"
+FACTORY_PIN_RE = re.compile(r"^# factory-pin: (?P<digest>\S+)\s*$", re.MULTILINE)
 
 DISABLED_VALUES: frozenset[str] = frozenset({"0", "false", "no", "off"})
 
@@ -372,32 +390,46 @@ def verify_repository_policy(
     return errors
 
 
-def resolve_build_timestamp(environ: dict[str, str] | None = None) -> tuple[str, str]:
-    """Return the report's build stamp and where it was read from."""
+def resolve_build_timestamp(environ: dict[str, str] | None = None) -> tuple[str | None, str]:
+    """Return the report's build stamp and where it was read from.
+
+    A build that does not export SOURCE_DATE_EPOCH gets no timestamp at all.
+    Stamping a fixed sentinel epoch instead was worse than recording nothing:
+    the report asserted a build date (2004-12-28) that was never true, and the
+    wall clock would make an otherwise reproducible report differ per build.
+    """
     env = os.environ if environ is None else environ
     raw = env.get("SOURCE_DATE_EPOCH")
-    if raw:
-        try:
-            epoch = int(raw)
-            return (
-                datetime.datetime.fromtimestamp(epoch, tz=datetime.timezone.utc).isoformat(),
-                "SOURCE_DATE_EPOCH",
-            )
-        except (ValueError, OverflowError, OSError):
-            reason = f"unusable SOURCE_DATE_EPOCH={raw!r}"
-    else:
-        reason = "SOURCE_DATE_EPOCH is unset"
-    print(
-        f"WARNING: {reason}; stamping the package-origin report with the fixed "
-        f"epoch {DEFAULT_BUILD_EPOCH} instead of the wall clock",
-        file=sys.stderr,
-    )
-    return (
-        datetime.datetime.fromtimestamp(
-            DEFAULT_BUILD_EPOCH, tz=datetime.timezone.utc
-        ).isoformat(),
-        "sentinel-epoch",
-    )
+    if not raw:
+        return None, "unset"
+    try:
+        epoch = int(raw)
+        return (
+            datetime.datetime.fromtimestamp(epoch, tz=datetime.timezone.utc).isoformat(),
+            "SOURCE_DATE_EPOCH",
+        )
+    except (ValueError, OverflowError, OSError):
+        print(
+            f"WARNING: unusable SOURCE_DATE_EPOCH={raw!r}; the package-origin report "
+            "records no build timestamp",
+            file=sys.stderr,
+        )
+        return None, "unusable"
+
+
+def read_factory_pin(repo_file: Path = Path(FACTORY_REPO_PATH)) -> str | None:
+    """The package factory digest stamped into the pinned repository file.
+
+    `scripts/bump-factory-pin.py` moves this stamp together with the
+    Containerfile's `ARG PACKAGE_IMAGE_SHA`, so it names the exact factory image
+    the contract's NEVRAs were installed from.
+    """
+    try:
+        text = repo_file.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    match = FACTORY_PIN_RE.search(text)
+    return match.group("digest") if match else None
 
 
 def generate_provenance_report(
@@ -431,11 +463,19 @@ def generate_provenance_report(
                  "arch": c["arch"], "origin": c["origin"]} for c in copies
             ]
     timestamp, timestamp_source = resolve_build_timestamp()
+    # Which factory and which base the NEVRAs came from is the other half of
+    # provenance: without it the report says what is installed but not what it
+    # was composed from.
+    factory_pin = read_factory_pin() or os.environ.get("PACKAGE_IMAGE_SHA") or None
+    base_image = os.environ.get("BASE_IMAGE") or None
+    base_image_digest = base_image.split("@", 1)[1] if base_image and "@" in base_image else None
     report: dict[str, Any] = {
         "build_provenance": {
             "flavor": flavor, "image": os.environ.get("IMAGE_NAME", "utah"),
             "version": os.environ.get("VERSION", "testing"),
             "timestamp": timestamp, "timestamp_source": timestamp_source,
+            "factory_pin": factory_pin,
+            "base_image": base_image, "base_image_digest": base_image_digest,
             "contract_packages": len(installed),
             "factory_packages_count": factory_count,
             "hummingbird_packages_count": hummingbird_count,
@@ -452,7 +492,9 @@ def generate_provenance_report(
         "# Utah Package Origin and NEVRA Report", f"# Flavor: {flavor}",
         f"# Contract packages: {len(installed)}", f"# Factory rebuilds (.bfin): {factory_count}",
         f"# Hummingbird packages (.hum): {hummingbird_count}", f"# Other: {other_count}",
-        f"# Generated: {timestamp}", "",
+        f"# Factory pin: {factory_pin or 'unknown'}",
+        f"# Base image: {base_image or 'unknown'}",
+        f"# Generated: {timestamp or 'unstamped (' + timestamp_source + ')'}", "",
         f"{'NAME':<35} {'NEVRA':<50} {'ORIGIN':<15} {'SECTION':<15}",
         f"{'-'*35} {'-'*50} {'-'*15} {'-'*15}",
     ]
