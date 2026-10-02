@@ -75,6 +75,8 @@ def write_overlay(
     [repositories.baseurls]. gnome_versions defaults to major "51" for each
     desktop package, with gtk4/libadwaita pinned to their own majors, so every
     GNOME package in the overlay is version-checked unless a test overrides it.
+    Only packages the overlay declares in [gnome] get a version key: `--check`
+    rejects a [gnome.versions] key that names no GNOME package.
     """
     sections = [
         toml_section("gnome", gnome or []),
@@ -83,8 +85,9 @@ def write_overlay(
         toml_section("services", services or []),
         toml_section("unavailable", unavailable or []),
     ]
+    own_majors = {"gtk4": "4", "libadwaita": "1"}
     versions = gnome_versions or {
-        "gtk4": "4", "libadwaita": "1", **{pkg: "51" for pkg in (gnome or [])}
+        pkg: own_majors.get(pkg, "51") for pkg in (gnome or [])
     }
     sections.append("[gnome.versions]\n")
     for name, major in versions.items():
@@ -223,6 +226,21 @@ class CheckModeTests(unittest.TestCase):
         self.assertIn("0 NVIDIA packages", plain.stdout)
         self.assertIn("1 NVIDIA packages", nvidia.stdout)
         self.assertIn("1 NVIDIA packages", gaming.stdout)
+
+    def test_a_gnome_version_key_naming_no_gnome_package_is_rejected(self) -> None:
+        """A misspelled key would silently drop that package's version claim."""
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            manifest = write_manifest(directory, ["bash"])
+            overlay = write_overlay(
+                directory,
+                gnome=["gnome-shell"],
+                gnome_versions={"gnome-shell": "51", "gnome-shel": "51"},
+            )
+            result = self.run_check(manifest, overlay)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("gnome-shel", result.stderr)
+        self.assertIn("is not declared in the [gnome] section", result.stderr)
 
     def test_a_duplicate_across_sections_is_rejected(self) -> None:
         """A package listed twice would be verified twice and counted twice."""

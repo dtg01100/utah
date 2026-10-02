@@ -4,9 +4,12 @@
 Beyond package presence, this is the supply-chain attestation for issue #21:
 GNOME packages carry the promised major version and an approved factory
 (`.bfin`) or Hummingbird (`.hum`) identity; parity packages cannot silently
-resolve from an unapproved Fedora repository; the system exposes only the
-runtime repositories the manifest allows; and the resolved package-origin/NEVRA
-set is retained as a report with build provenance.
+resolve from an unapproved Fedora repository; and the resolved
+package-origin/NEVRA set is retained as a report with build provenance.
+
+`--check` additionally validates the manifest itself off-image: the `.repo`
+files in `packages/` may name only the repositories the manifest allows. It
+does not scan a built image's `/etc/yum.repos.d`.
 
 Mirrors assert_packages_present from projectbluefin/bluefin's
 build_files/shared/package-lib.sh: name every missing package, once.
@@ -322,14 +325,11 @@ def check_repo_sections(
     source: str,
     allowed_repos: set[str],
     *,
-    skip_sections: frozenset[str] = frozenset(),
     expected_baseurls: dict[str, tuple[str, ...]] | None,
 ) -> list[str]:
     """Apply the allowlist to every section of an already-parsed config."""
     errors: list[str] = []
     for section_name in parser.sections():
-        if section_name in skip_sections:
-            continue
         if not is_repo_enabled(parser.get(section_name, "enabled", fallback="1")):
             continue
         if section_name in allowed_repos:
@@ -630,6 +630,14 @@ def main() -> int:
         for pkg in factory_parity:
             assert pkg in parity, (
                 f"Factory parity package '{pkg}' is not declared in the [parity] section"
+            )
+        # A [gnome.versions] key that names no [gnome] package asserts nothing:
+        # verify_gnome_contract looks versions up by package name, so a typo
+        # would silently drop that package's major-version claim on-image.
+        gnome_names = set(gnome)
+        for pkg in major_versions:
+            assert pkg in gnome_names, (
+                f"[gnome.versions] key '{pkg}' is not declared in the [gnome] section"
             )
         repo_errors = verify_repository_policy(
             args.manifest.parent, allowed_repos,

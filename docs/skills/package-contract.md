@@ -123,6 +123,10 @@ install-set check it attests the supply chain the image is composed from
   `[gnome.versions]`, and its release must carry the factory or Hummingbird
   identity (a `.bfin`/`.hum` release tag). A GNOME package resolving to a bare
   Fedora release is rejected: the factory builds GNOME, not the runtime base.
+  This runs on-image only; `--check` instead asserts that every
+  `[gnome.versions]` key names a package declared in `[gnome]`, so a misspelled
+  key fails the manifest check rather than silently dropping that package's
+  version claim.
 - **Parity origin** (`verify_parity_origin`) — a Bluefin parity package named
   in `[factory] parity` must carry the factory's `.bfin` release identity, so a
   package the factory supplies cannot silently resolve from another repository;
