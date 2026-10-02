@@ -94,6 +94,16 @@ just build-local testing localhost/utah-packages:local-merged
 This runs the production `Containerfile` against a package repository image
 already present in local containers-storage via `PACKAGE_IMAGE_REF`.
 
+The build records the same provenance labels and
+`/usr/share/utah/build-manifest.json` as CI, including the package image's
+digest: it is read from containers-storage with `podman image inspect`. Export
+`PACKAGE_IMAGE_SHA` to override that with the registry digest the local copy
+came from -- useful when reproducing a published build:
+
+```bash
+PACKAGE_IMAGE_SHA="sha256:..." just build-local testing ghcr.io/projectbluefin/utah-packages:testing
+```
+
 ## Local-only SSH diagnostics
 
 Published images keep SSH disabled. Set `ENABLE_SSHD=1` only for a local
