@@ -24,7 +24,7 @@ import sys
 import tempfile
 import tomllib
 import unittest
-from contextlib import redirect_stdout
+from contextlib import ExitStack, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -34,7 +34,6 @@ SCRIPT = ROOT / "scripts" / "verify-rpm-contract.py"
 # The path the script consults before falling back to the manifest. Tests that
 # exercise that branch redirect it into a temporary directory.
 RESOLVED_CONTRACT = "/usr/share/utah/contract.txt"
-RUNTIME_REPOS_DIR = "/etc/yum.repos.d"
 
 
 def load_module():
@@ -121,6 +120,78 @@ def write_overlay(
     path = directory / "utah.toml"
     path.write_text("".join(sections))
     return path
+
+
+def run_main(module, manifest: Path, overlay: Path, installed: set[str],
+             *, flavor: str = "main",
+             releases: dict[str, str] | None = None,
+             multilib: set[str] | None = None,
+             extra_argv: list[str] | None = None,
+             report_dir: Path | None = None,
+             runtime_repos_dir: Path | None = None,
+             stderr_buffer: io.StringIO | None = None) -> tuple[int, str, str]:
+    """Invoke scripts/verify-rpm-contract.py's main() with stubbed packages.
+
+    Returns (exit_code, stdout, stderr). Shared by VerifyModeTests and
+    OnImageRepoAllowlistTests so neither class reimplements the patch graph;
+    `VerifyModeTests` discards the third tuple element and lets the test's own
+    `sys.stderr` patch (when present) win by leaving stderr unwrapped here.
+    """
+    argv = ["verify-rpm-contract.py", *(extra_argv or []), str(manifest), str(overlay)]
+    stdout = io.StringIO()
+    overlay_data = tomllib.loads(overlay.read_text())
+    gnome_versions = overlay_data.get("gnome", {}).get("versions", {})
+    factory = set(overlay_data.get("factory", {}).get("packages", []))
+    releases = releases or {}
+    multilib = multilib or set()
+
+    def fake_query(packages):
+        result = {}
+        for pkg in packages:
+            if pkg not in installed:
+                continue
+            major = gnome_versions.get(pkg, "1")
+            default_release = "1.bfin.x86_64" if pkg in factory else "1.hum.x86_64"
+            release = releases.get(pkg, default_release)
+            version = f"{major}.0"
+            info = {
+                "name": pkg, "epoch": "0", "version": version,
+                "release": release, "arch": "x86_64",
+                "nevra": f"{pkg}-{version}-{release}",
+                "origin": "factory" if ".bfin" in release else (
+                    "hummingbird" if ".hum" in release else "fedora"),
+            }
+            if pkg in multilib:
+                i686_release = release.replace("x86_64", "i686")
+                other = {**info, "arch": "i686", "release": i686_release,
+                         "nevra": f"{pkg}-{version}-{i686_release}"}
+                info = {**info, "installs": [dict(info), other]}
+            result[pkg] = info
+        return result, []
+
+    report_dir = report_dir or Path(tempfile.mkdtemp())
+    runtime_repos = runtime_repos_dir if runtime_repos_dir is not None else Path(
+        tempfile.mkdtemp()
+    )
+    stderr_text = ""
+    base_patches = [
+        patch.object(module, "is_installed",
+                     side_effect=lambda p: p in installed),
+        patch.object(module, "query_packages", side_effect=fake_query),
+        patch.object(module, "RUNTIME_REPOS_DIR", runtime_repos),
+        patch.object(sys, "argv", argv),
+        patch.dict(os.environ, {"IMAGE_FLAVOR": flavor, "UTAH_REPORT_DIR": str(report_dir)}),
+        redirect_stdout(stdout),
+    ]
+    if stderr_buffer is not None:
+        base_patches.append(patch.object(sys, "stderr", stderr_buffer))
+    with ExitStack() as stack:
+        for patcher in base_patches:
+            stack.enter_context(patcher)
+        code = module.main()
+    if stderr_buffer is not None:
+        stderr_text = stderr_buffer.getvalue()
+    return code, stdout.getvalue(), stderr_text
 
 
 class SectionTests(unittest.TestCase):
@@ -305,51 +376,13 @@ class VerifyModeTests(unittest.TestCase):
                  extra_argv: list[str] | None = None,
                  report_dir: Path | None = None,
                  runtime_repos_dir: Path | None = None) -> tuple[int, str]:
-        argv = ["verify-rpm-contract.py", *(extra_argv or []), str(manifest), str(overlay)]
-        stdout = io.StringIO()
-        overlay_data = tomllib.loads(overlay.read_text())
-        gnome_versions = overlay_data.get("gnome", {}).get("versions", {})
-        factory = set(overlay_data.get("factory", {}).get("packages", []))
-        releases = releases or {}
-        multilib = multilib or set()
-
-        def fake_query(packages):
-            result = {}
-            for pkg in packages:
-                if pkg not in installed:
-                    continue
-                major = gnome_versions.get(pkg, "1")
-                default_release = "1.bfin.x86_64" if pkg in factory else "1.hum.x86_64"
-                release = releases.get(pkg, default_release)
-                version = f"{major}.0"
-                info = {
-                    "name": pkg, "epoch": "0", "version": version,
-                    "release": release, "arch": "x86_64",
-                    "nevra": f"{pkg}-{version}-{release}",
-                    "origin": "factory" if ".bfin" in release else (
-                        "hummingbird" if ".hum" in release else "fedora"),
-                }
-                if pkg in multilib:
-                    i686_release = release.replace("x86_64", "i686")
-                    other = {**info, "arch": "i686", "release": i686_release,
-                             "nevra": f"{pkg}-{version}-{i686_release}"}
-                    info = {**info, "installs": [dict(info), other]}
-                result[pkg] = info
-            return result, []
-
-        report_dir = report_dir or Path(tempfile.mkdtemp())
-        runtime_repos = runtime_repos_dir if runtime_repos_dir is not None else Path(
-            tempfile.mkdtemp()
+        code, out, _ = run_main(
+            self.module, manifest, overlay, installed,
+            flavor=flavor, releases=releases, multilib=multilib,
+            extra_argv=extra_argv, report_dir=report_dir,
+            runtime_repos_dir=runtime_repos_dir,
         )
-        with patch.object(self.module, "is_installed",
-                          side_effect=lambda p: p in installed), \
-                patch.object(self.module, "query_packages", side_effect=fake_query), \
-                patch.object(self.module, "RUNTIME_REPOS_DIR", runtime_repos), \
-                patch.object(sys, "argv", argv), \
-                patch.dict(os.environ, {"IMAGE_FLAVOR": flavor, "UTAH_REPORT_DIR": str(report_dir)}), \
-                redirect_stdout(stdout):
-            code = self.module.main()
-        return code, stdout.getvalue()
+        return code, out
 
     def test_a_fully_installed_contract_passes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1160,39 +1193,11 @@ class OnImageRepoAllowlistTests(unittest.TestCase):
 
     def run_main(self, manifest: Path, overlay: Path, installed: set[str],
                  runtime_repos_dir: Path, flavor: str = "main") -> tuple[int, str, str]:
-        argv = ["verify-rpm-contract.py", str(manifest), str(overlay)]
-        stdout, stderr = io.StringIO(), io.StringIO()
-        overlay_data = tomllib.loads(overlay.read_text())
-        gnome_versions = overlay_data.get("gnome", {}).get("versions", {})
-        factory = set(overlay_data.get("factory", {}).get("packages", []))
-
-        def fake_query(packages):
-            result = {}
-            for pkg in packages:
-                if pkg not in installed:
-                    continue
-                major = gnome_versions.get(pkg, "1")
-                release = "1.bfin.x86_64" if pkg in factory else "1.hum.x86_64"
-                version = f"{major}.0"
-                result[pkg] = {
-                    "name": pkg, "epoch": "0", "version": version,
-                    "release": release, "arch": "x86_64",
-                    "nevra": f"{pkg}-{version}-{release}",
-                    "origin": "factory" if pkg in factory else "hummingbird",
-                }
-            return result, []
-
-        report_dir = Path(tempfile.mkdtemp())
-        with patch.object(self.module, "is_installed",
-                          side_effect=lambda p: p in installed), \
-                patch.object(self.module, "query_packages", side_effect=fake_query), \
-                patch.object(self.module, "RUNTIME_REPOS_DIR", runtime_repos_dir), \
-                patch.object(sys, "argv", argv), \
-                patch.dict(os.environ, {"IMAGE_FLAVOR": flavor, "UTAH_REPORT_DIR": str(report_dir)}), \
-                patch.object(sys, "stderr", stderr), \
-                redirect_stdout(stdout):
-            code = self.module.main()
-        return code, stdout.getvalue(), stderr.getvalue()
+        return run_main(
+            self.module, manifest, overlay, installed,
+            flavor=flavor, runtime_repos_dir=runtime_repos_dir,
+            stderr_buffer=io.StringIO(),
+        )
 
     def test_a_clean_runtime_repo_set_passes(self) -> None:
         """The runtime /etc/yum.repos.d only contains the allowlisted repos."""
