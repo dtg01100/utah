@@ -314,3 +314,13 @@ and shipping one without signing the modules would not fix Secure Boot.
 Signing and enrollment remain tracked by #395. Common's guarded
 `check-idle-power-draw` stays unchanged until the factory supplies `powerstat`.
 These fallbacks do not add packages or enable Fedora runtime repositories.
+
+For #446, `report` overrides Common's `bonedigger-report` recipe so bug
+reports route to `projectbluefin/utah` instead of falling through Common's
+`ublue-image-repo` grammar. The override sets
+`UBLUE_IMAGE_REPO_BIN=/usr/local/libexec/utah-image-repo`; that Utah-local
+shim short-circuits every `utah*` name to `projectbluefin/utah` and forwards
+every other name to Common's authoritative resolver (so non-Utah images
+inheriting from this image still resolve correctly). The shim itself is
+installed by `Containerfile` from `scripts/utah-image-repo` (alongside the
+other `utah-*` helpers) and listed in `just check`'s presence assertion.

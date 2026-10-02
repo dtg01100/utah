@@ -158,9 +158,24 @@ class UjustOverridesTests(unittest.TestCase):
         # projectbluefin/utah#446: ujust report on Utah was falling through
         # common's routing grammar and landing in projectbluefin/common.
         # Utah overrides `report` in 60-custom.just so bonedigger-report
-        # routes through the local utah-image-repo shim. Static read of
-        # the recipe body is the assertion; the dynamic routing behaviour
-        # is covered by tests/test_utah_image_repo.py.
+        # routes through the local utah-image-repo shim. The fixture below
+        # wires a fake bonedigger-report into the same import graph the image
+        # ships, then runs `just --show report` to verify the override is the
+        # version `just` resolves at the entry point (the shallower import
+        # depth wins on just >= 1.56).
+        self.mock("bonedigger-report", 'echo "bonedigger $*" >> "$CALLS"; '
+                  'echo "${UBLUE_IMAGE_REPO_BIN:-unset}" >> "$CALLS"')
+        result = subprocess.run([self.just, "--justfile", str(self.entry),
+                                 "--show", "report"],
+                                env=self.env, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # Override body must set the UBLUE_IMAGE_REPO_BIN env to the shim path
+        # and call bonedigger-report through the recipe.
+        self.assertIn("bonedigger-report", result.stdout)
+        self.assertIn("/usr/local/libexec/utah-image-repo", result.stdout)
+        # And the dynamic routing behaviour must surface the shim path at
+        # runtime, not the default ublue-image-repo from common.
+        self.assertNotIn("/usr/libexec/ublue-image-repo", result.stdout)
         text = RECIPES.read_text()
         match = re.search(
             r"report \*args:\s*\n"
