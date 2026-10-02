@@ -128,7 +128,7 @@ its `metadata.json`. It runs in two modes from the same script:
   tree; this is what `just check` runs.
 - **Installed mode** — the default checks `/usr/share/gnome-shell/extensions`
   under an image root; this is what runs in the Containerfile as
-  `/usr/local/libexec/utah-verify-gnome-extensions`, right after
+  `/usr/libexec/utah-verify-gnome-extensions`, right after
   `utah-build-gnome-extensions`.
 
 Building GSConnect runs meson install. Because `desktop-file-utils` is not
@@ -163,10 +163,15 @@ second mechanism, not the pixmap overlay.
 GDM uses its own dconf profile (`/etc/dconf/profile/gdm`, provided by the
 gdm RPM). Utah ships a single keyfile,
 `system_files/shared/etc/dconf/db/gdm.d/01-bluefin-gdm-logo`, that sets
-`logo` to the same `bluefin.png` the desktop contract already asserts
-under `/usr/share/ublue-os/bluefin-logos/`. That avoids a duplicate asset
-in the overlay and means a brand refresh in `common` flows to both the
-desktop shell and the greeter without a second commit here.
+`logo` to `/usr/share/pixmaps/bluefin-gdm-logo.png`, a 150x61 Bluefin
+wordmark Utah ships in `system_files/shared/usr/share/pixmaps/`. It is a
+copy of `common`'s `fedora-gdm-logo.png` under a Utah-owned name, so no logos
+RPM owns or erases it.
+
+**Do not point `logo` at `bluefin-logos/bluefin.png`.** gnome-shell draws the
+greeter logo at its natural size; that file is 372x493 and fills the login
+screen. Bluefin-LTS keeps the greeter logo small by using `common`'s 150x61
+`fedora-gdm-logo.png`. A unit test caps the shipped logo at 256x128.
 
 `scripts/configure-branding.sh` runs `dconf update` after stamping the
 contract files, so the greeter database is compiled at build time and a
@@ -177,8 +182,8 @@ so it is a no-op on a host without the gnome-desktop stack (CI without
 
 `dconf update` does **not** validate the logo path — it compiles keyfiles
 and stores `logo` as an opaque string, so a dangling path compiles
-cleanly. The image itself is guarded by the pre-existing `[branding].files`
-entry for `/usr/share/ublue-os/bluefin-logos/bluefin.png` in
+cleanly. The image itself is guarded by the new `[branding].files`
+entry for `/usr/share/pixmaps/bluefin-gdm-logo.png` in
 `contracts/bluefin-desktop.toml`, enforced by
 `utah-verify-desktop-contract` in the same `RUN` layer.
 
@@ -234,6 +239,49 @@ gets its login. A mask is also the only lever that works here — the generator'
 `getty.target.wants` symlink is created in `/run` at boot, so it cannot be
 deleted at build time, and a preset entry alone would not stop it.
 
+### The fwupd-refresh unit pins a static user (#385)
+
+Hummingbird builds fwupd with `-Dsystemd_unit_user=""`, which expands the
+`@user@` template in `data/motd/fwupd-refresh.service.in` to `DynamicUser=yes`.
+Combined with the unit's `CacheDirectory=fwupdmgr`, every boot triggers
+systemd's pre-existing-public → `/var/cache/private/fwupdmgr` migration; in
+this bootc image the rename returns `EACCES` (a policy denial on `/var/cache`,
+not a plain-ownership problem), the unit exits 1, and firmware metadata never
+refreshes.
+
+The fix pins the unit to a static user so the migration code never runs.
+Both halves must land together — the drop-in alone leaves the service with no
+user, and the sysusers fragment alone leaves the unit running as a dynamic
+user and still failing:
+
+- `system_files/shared/usr/lib/systemd/system/fwupd-refresh.service.d/10-utah-fwupd-refresh-user.conf`
+  sets `User=fwupd-refresh` / `Group=fwupd-refresh` / `DynamicUser=no`,
+  plus the hardening directives that `DynamicUser=yes` would have implied
+  (`NoNewPrivileges=yes`, `PrivateTmp=yes`, `RemoveIPC=yes`,
+  `RestrictSUIDSGID=yes`, `ProtectSystem=strict`). `DynamicUser=no` is the
+  load-bearing directive: systemd's `exec_directory_is_private()`
+  (`src/core/execute.c`) gates the pre-existing-public → `/var/cache/private`
+  migration on `context->dynamic_user` alone, not on whether `User=` is set,
+  so without it the migration still fires and the unit still fails the same
+  way. `User=` + `DynamicUser=yes` is a documented legal combination
+  (`systemd.exec(5)`), but it is not the combination we want here. The user
+  name `fwupd-refresh` is load-bearing: upstream
+  `policy/org.freedesktop.fwupd.rules` grants `refresh-remote` /
+  `get-remotes` to `subject.user == "fwupd-refresh"` unconditionally, so
+  renaming the user would break refresh at the polkit layer.
+- `system_files/shared/usr/lib/sysusers.d/utah-fwupd-refresh.conf` allocates
+  the user with auto-allocated UID/GID. systemd-sysusers runs from
+  `systemd-sysusers.service` before `local-fs.target`, so by the time
+  `fwupd-refresh.timer` fires the user exists. `sysusers.d(5)` defaults
+  `HOME` to `/` when the HOME field is omitted.
+
+The daemon (`fwupd.service`) is unaffected: it runs as root with no
+`DynamicUser=` and uses `CacheDirectory=fwupd`, so its cache lives under
+`/var/cache/fwupd` directly with no dynamic-user migration path. Firmware
+flashing still goes through the daemon, which keeps its existing root
+lifecycle. The pairing is asserted by `FwupdRefreshDropInTests` in
+`tests/test_desktop_contract.py`.
+
 ## The verifiers run twice
 
 The same verifier runs in the Containerfile and on demand, so a local image
@@ -248,7 +296,7 @@ or a CI artifact can be checked after the fact (recipe comment, `Justfile`,
   `localhost/utah:testing`) podman-runs both verifiers inside an
   already-composed image: the desktop verifier and the contract are
   bind-mounted from the working tree, the extension verifier runs from the
-  image's own `/usr/local/libexec`.
+  image's own `/usr/libexec`.
 - **Off-image** — `verify-desktop-contract.py --check` validates the contract
   TOML itself in source-only CI and is part of `just check`; it asserts
   nothing about any image.

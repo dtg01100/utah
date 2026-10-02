@@ -187,7 +187,7 @@ jobs:
     needs: [build_main, build_kernel]
     if: >-
       !cancelled() && github.ref == 'refs/heads/testing' &&
-      github.event_name != 'pull_request' &&
+      github.event_name != 'pull_request' && !inputs.contract_only &&
       needs.build_main.result == 'success' &&
       (needs.build_kernel.result == 'success' || needs.build_kernel.result == 'skipped')
     runs-on: ubuntu-26.04
@@ -212,7 +212,7 @@ jobs:
   # digest artifact, which post-testing-e2e matches by glob.
   build_kernel:
     needs: [contract, kernel_cache]
-    if: ${{ !cancelled() && needs.contract.result == 'success' && needs.kernel_cache.result == 'success' && needs.kernel_cache.outputs.available == 'true' && needs.contract.outputs.kernel_flavors != '[]' }}
+    if: ${{ !cancelled() && !inputs.contract_only && needs.contract.result == 'success' && needs.kernel_cache.result == 'success' && needs.kernel_cache.outputs.available == 'true' && needs.contract.outputs.kernel_flavors != '[]' }}
     uses: projectbluefin/actions/.github/workflows/reusable-build.yml@ab62f2774eb465d912b61b5c0cd9cd230c811768 # v1
     permissions:
       contents: read

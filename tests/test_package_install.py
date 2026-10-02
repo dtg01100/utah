@@ -554,11 +554,11 @@ class PackageInstallPathTests(unittest.TestCase):
 
             self.assertEqual(code, 0)
             self.assertIn(
-                "NOTE: missing-pkg-1 has no source in Utah's repositories and is skipped (see packages/utah.toml)",
+                "NOTE: missing-pkg-1 is a tracked parity gap with no source in Utah's repositories and is not installed (see packages/utah.toml)",
                 out,
             )
             self.assertIn(
-                "NOTE: missing-pkg-2 has no source in Utah's repositories and is skipped (see packages/utah.toml)",
+                "NOTE: missing-pkg-2 is a tracked parity gap with no source in Utah's repositories and is not installed (see packages/utah.toml)",
                 out,
             )
 

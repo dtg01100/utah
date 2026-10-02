@@ -3,7 +3,7 @@
 <!-- BEGIN E2E VERIFICATION -->
 [![Verified ISO desktop](docs/verification/screenshots/installed-fastfetch.png)](docs/verification/README.md)
 
-*LUKS ISO test passed for commit `815ea44d229e`. [CI run](https://github.com/projectbluefin/utah/actions/runs/36515045194); [screenshots and provenance](docs/verification/README.md).*
+*LUKS ISO test passed for commit `4d5853b05160`. [CI run](https://github.com/projectbluefin/utah/actions/runs/37031124031); [screenshots and provenance](docs/verification/README.md).*
 <!-- END E2E VERIFICATION -->
 
 †Utahraptor ostrommaysi
@@ -67,11 +67,15 @@ than being noticed later.
 | | count |
 | --- | --- |
 | Bluefin contract installed | **61** |
-| Utah additions (GNOME 51, base-image parity, device firmware, desktop services) | 86 |
-| Genuinely unavailable | **6** |
+| Utah additions (GNOME 51, base-image parity, device firmware, desktop services) | 88 |
+| Genuinely unavailable | **7** |
 
 The install writes its resolved list to `/usr/share/utah/contract.txt` and the
-verify step asserts *that file*, so the two cannot disagree. These counts are
+verify step asserts *that file*, so the two cannot disagree. The unavailable
+row is not limited to the copied contract: it also holds image-level parity
+gaps — names Bluefin's published image ships from a build file outside
+`base.toml`, recorded in `baselines/bluefin/rpms.tsv` and triaged in
+`baselines/triage.toml` (`nvtop` is the current example). These counts are
 generated from `packages/bluefin.toml` and `packages/utah.toml`
 (`scripts/generate-site-data.py`, `site/data/packages.json`); `just check`
 fails if this table drifts from that output (`scripts/check-doc-counts.py`).

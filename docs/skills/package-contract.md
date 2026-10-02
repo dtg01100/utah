@@ -1,7 +1,7 @@
 ---
 name: package-contract
 version: "1.1"
-last_updated: "2026-10-01"
+last_updated: "2026-10-02"
 id: package-contract
 one_line_purpose: Maintain Bluefin package parity and Utah's overlay manifest.
 entry_point: docs/skills/package-contract.md
@@ -54,8 +54,10 @@ policy for changing them.
     and iwlegacy packages are named explicitly — the X230's
     `iwlwifi-6000g2a-6.ucode` ships in `iwlwifi-dvm-firmware` (#97).
   - `[services]` — desktop services Bluefin adds on top of the server base.
-  - `[unavailable]` — Bluefin contract packages none of Utah's repositories
-    provide.
+  - `[unavailable]` — Bluefin parity gaps none of Utah's enabled repositories
+    provide, whether the name comes from the copied `base.toml` contract or
+    from the published Bluefin image snapshot
+    (`baselines/bluefin/rpms.tsv`).
 
 ## Wi-Fi documentation currency
 
@@ -69,7 +71,11 @@ hardware establishes that its radio works.
 
 ## [unavailable] rules
 
-`[unavailable]` means "no source provides this name at all". Each entry
+`[unavailable]` means "no repository Utah enables provides this name at all".
+It covers both kinds of parity gap: names in the copied `base.toml` contract,
+and names Bluefin's published image ships from a build file outside that
+contract (recorded in `baselines/bluefin/rpms.tsv` and triaged in
+`baselines/triage.toml` — `nvtop` is the current example). Each entry
 **MUST carry a tracking issue**: the list is the documented parity debt, not
 a dumping ground for packages that are merely inconvenient (header comment,
 `packages/utah.toml`).
@@ -204,10 +210,12 @@ or updating the PR. That runs the contract gates without building, pushing or
 signing images from the unreviewed upstream set,
 which is what makes `just check-repos` catch a missing overlay source on the
 bump PR itself (see `docs/skills/ci-workflows.md`).
+If upstream reverts to the contract on `main`, the proposal action still runs
+with an empty diff so it closes the stale bump PR without dispatching CI.
 
 Current counts, per the README "Package parity" section: 61 Bluefin contract
-packages installed, 86 Utah additions (GNOME 51, base-image parity, device
-firmware, desktop services), 6 genuinely unavailable. `scripts/check-doc-counts.py` (part of
+packages installed, 88 Utah additions (GNOME 51, base-image parity, device
+firmware, desktop services), 7 genuinely unavailable. `scripts/check-doc-counts.py` (part of
 `just check`) recomputes these from the manifests and fails if either
 document drifts from `site/data/packages.json`.
 
@@ -265,6 +273,17 @@ a partition grows past the recorded state; a name moving from
 landing and is silent. A name disappearing from the baseline (an operator
 moved it into `[parity]` and closed the gap) is silent too — only new
 names that did not exist anywhere in the baseline trigger the gate.
+
+The baseline records the Bluefin ref and factory pin it was captured
+against (`ref` / `factory_ref` in the JSON). `check` compares those back
+against the current audit before it diffs the partitions: a Bluefin-ref or
+factory-pin bump that leaves the package set unchanged would otherwise read
+as "no growth" and pass silently, so it is reported as a stale baseline
+instead. Rewrite the baseline against the new ref with `--write` before the
+gate can meaningfully run. A stale-baseline verdict is reported before any
+partition-growth message, so it is never masked by a growth report, and the
+failing summary line names the stale baseline rather than claiming the
+partitions grew.
 
 Bootstrap is a one-time manual command: on a fresh checkout where
 `baselines/audit-baseline.json` is missing, `just check-audit-parity`
@@ -324,3 +343,27 @@ and shipping one without signing the modules would not fix Secure Boot.
 Signing and enrollment remain tracked by #395. Common's guarded
 `check-idle-power-draw` stays unchanged until the factory supplies `powerstat`.
 These fallbacks do not add packages or enable Fedora runtime repositories.
+
+For #446, `report` overrides Common's `bonedigger-report` recipe so bug
+reports route to `projectbluefin/utah` instead of falling through Common's
+`ublue-image-repo` grammar. The override sets
+`UBLUE_IMAGE_REPO_BIN=/usr/libexec/utah-image-repo`; that Utah-local
+shim short-circuits every `utah*` name to `projectbluefin/utah` and forwards
+every other name to Common's authoritative resolver (so non-Utah images
+inheriting from this image still resolve correctly). The shim itself is
+installed by `Containerfile` from `scripts/image-repo.sh` (alongside the
+other `utah-*` helpers, under the same `<name>.sh` -> `utah-<name>`
+rename) and listed in `just check`'s presence assertion. Its option
+loop mirrors Common's exactly — `--` and the first non-option both end
+option parsing — and the remaining positionals are forwarded verbatim,
+so an empty `IMAGE_NAME` keeps its slot instead of promoting
+`IMAGE_TAG` into it.
+
+Two deliberate differences from Common's `report` recipe: the override sets
+`BONEDIGGER_BRAND="🐦 Utah Bug Report"` so the prompt names Utah rather than
+Bluefin, and it does not forward Common's `BONEDIGGER_VERSION` because
+`bonedigger-report` never reads that variable and it is not in scope for a
+Utah-local recipe. The `--list` description is kept on a single comment line
+immediately above `[group('System')]`; `just` uses only that line, so the
+explanatory block above it must stay separated by a blank line or `ujust
+--list` would print an implementation-comment fragment instead.

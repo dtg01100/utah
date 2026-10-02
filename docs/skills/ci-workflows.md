@@ -1,7 +1,7 @@
 ---
 name: ci-workflows
 version: "1.1"
-last_updated: "2026-10-01"
+last_updated: "2026-10-02"
 id: ci-workflows
 one_line_purpose: Navigate Utah's build, promote, and sync workflow topology.
 entry_point: docs/skills/ci-workflows.md
@@ -29,8 +29,8 @@ or pinned third-party actions:
   manual dispatch. Top-level `permissions: {}`; each job
   grants its own. Cancels in-progress runs per workflow and ref. A dispatch
   with `contract_only=true` runs only the `contract` job and skips
-  `kernel_cache`, `build_main` and `build_kernel`, so nothing is built,
-  pushed or signed.
+  `kernel_cache`, `build_main`, `build_kernel` and `dispatch-iso`, so nothing
+  is built, pushed, signed or sent to Post-Testing E2E, even on `testing`.
 - `.github/workflows/promote-testing-to-main.yml` -- pushes to `testing`, a
   nightly cron, and manual dispatch.
 - `.github/workflows/sync-main-to-testing.yml` -- source pushes to `main`,
@@ -44,6 +44,10 @@ or pinned third-party actions:
   `scripts/check-doc-counts.py --write`, so the bump carries the new
   `site/data/packages.json` and the README / `package-contract.md` counts
   that `just check` compares against the manifests.
+  The proposal action runs even when upstream equals `main`: it must see the
+  empty diff to close a previously opened bump after an upstream reversion.
+  Its body file is created on both paths, while explicit CI dispatch remains
+  restricted to `created`/`updated` proposals.
 
   The bump PR would otherwise arrive with **no checks**: GitHub does not
   start `on: pull_request` workflows for pull requests created with the
@@ -303,10 +307,16 @@ rerun), not just one workflow.
 
 The cadence is RFC'd in #336. What runs today:
 
-- `testing` is the integration branch. `build.yml` runs on every pull request
-  and on every push to `testing`; `main` receives the promotion merge from
-  `promote-testing-to-main.yml` and nothing else. `sync-main-to-testing.yml`
-  carries the promotion back down nightly.
+- Open pull requests against `main`, never `testing`. `sync-main-to-testing.yml`
+  resets `testing` to `main` on every push to `main` and again nightly on its
+  own `20 22 * * *` schedule, so a commit merged straight into `testing` is
+  orphaned: #404 was lost this way and had to be re-landed. `build.yml` runs on
+  every pull request and declares `push: branches: [testing]`, but that trigger
+  is not how a `main` commit reaches the image tags: the sync pushes `testing`
+  with the workflow's own `GITHUB_TOKEN`, and a `GITHUB_TOKEN` push starts no
+  workflow. `sync-main-to-testing.yml`'s `build` job therefore dispatches the
+  build explicitly (`gh workflow run build.yml --ref testing`) once the sync
+  job returns, which is the path that actually produces the images.
 - `:testing` advances per green build, not on a clock: the tags move in
   `post-testing-e2e.yml`, after the LUKS ISO matrix and the production-ISO
   composition both pass. `promote-testing-to-main.yml` is the daily 04:00 UTC
