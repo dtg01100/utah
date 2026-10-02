@@ -1,7 +1,7 @@
 ---
 name: package-contract
 version: "1.0"
-last_updated: "2026-10-01"
+last_updated: "2026-10-02"
 id: package-contract
 one_line_purpose: Maintain Bluefin package parity and Utah's overlay manifest.
 entry_point: docs/skills/package-contract.md
@@ -153,7 +153,13 @@ install-set check it attests the supply chain the image is composed from
   the Hummingbird base image are subject to the same allowlist (#454). The
   runtime scan uses `check_mode=False` because the v4l2loopback stage's
   builder-only repo files are never copied into the runtime layer (Containerfile,
-  v4l2loopback stage).
+  v4l2loopback stage). The scan relies on the `COPY packages/hummingbird.repo …
+  /etc/yum.repos.d/` line (`Containerfile:59`) overwriting whatever the
+  Hummingbird base ships under `/etc/yum.repos.d/hummingbird.repo`; if
+  Hummingbird changes that file's section id or baseurl without Utah shipping a
+  matching override, the build fails with the intended trip-wire message from
+  `check_repo_sections`. Operators updating Hummingbird's pin must keep this
+  coupling intact.
 - **Build provenance** (`generate_provenance_report`) — the resolved
   package-origin/NEVRA data is written as JSON plus a human-readable report to
   `$UTAH_REPORT_DIR` (default `/usr/share/utah`), retaining the image flavor,
