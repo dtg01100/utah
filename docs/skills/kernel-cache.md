@@ -1,7 +1,7 @@
 ---
 name: kernel-cache
-version: "1.0"
-last_updated: "2026-09-19"
+version: "1.1"
+last_updated: "2026-10-02"
 id: kernel-cache
 one_line_purpose: Understand and rebuild the OGC kernel and NVIDIA module cache image.
 entry_point: docs/skills/kernel-cache.md
@@ -115,6 +115,44 @@ input-hash tag, not an immutable digest, so a cached installer gets the same
 check as a fresh one. Bumping `UTAH_NVIDIA_DRIVER_VERSION` means updating
 `NVIDIA_RUN_SHA256` with it, from NVIDIA's published
 `NVIDIA-Linux-x86_64-<version>.run.sha256sum` (comment, `install-nvidia.sh`).
+
+## The NVIDIA suspend / PM quirk
+
+`utah-nvidia` and `utah-nvidia-gaming` ship an open-kernel-module driver
+built from NVIDIA's `.run` installer (header comment,
+`scripts/install-nvidia.sh`). On the 595.x driver family, requesting
+suspend from the GNOME power menu starts the system-sleep transaction,
+then the GSP firmware crashes during the unload phase. The kernel log
+shows the sequence `nvAssertFailedNoLog` on `kern_bus_vbar2.c` →
+`Xid 1, GSP task exception: load access fault` → `gpuPowerManagementEnter:
+GSP unload failed at suspend: 0x65` → `gpuPowerManagementResume: cannot
+init libOS PMU logging structures` → `Xid 119, Timeout after Ns of
+waiting for RPC` → `BUG: unable to handle page fault for address:
+00000000000026b0` → `Oops: 0000` in `nvEvoDisableVblankSemControl`. The
+display never returns; only a hard power-off recovers the machine
+(projectbluefin/utah#492, NVIDIA/open-gpu-kernel-modules#1271).
+
+The fix is `NVreg_DynamicPowerManagement=0x01`, set in
+`system_files/shared/usr/lib/modprobe.d/zz-nvidia-pm.conf`. The
+`zz-` prefix sorts it after the driver package's `nvidia.conf` (and
+after common#1176's `zz-nvidia-suspend.conf`, which pins
+`UseKernelSuspendNotifiers=1` and `TemporaryFilePath=/var/tmp` to keep
+the suspend transition out of the driver-veto path) so this assignment
+wins any duplicate. The option is honoured by Turing+ drivers, inert on
+systems without the nvidia module, and lives in the shared layer because
+the options are safe on every flavor including `main` and `gaming` which
+never load nvidia. Trade-off: the GPU no longer power-gates into its
+deepest idle state, costing a small amount of idle power. On a hybrid
+laptop the iGPU drives the display, so the user-visible cost is
+effectively nil.
+
+When diagnosing a black screen after suspend on a Utah NVIDIA image,
+capture `journalctl -b -1` before reboot and grep for `NVRM:`. A
+`Xid 1, GSP task exception` followed by a `Xid 119` and a NULL page
+fault in `nvEvoDisableVblankSemControl` is the signature covered by
+this quirk; a `NV_ERR_NOT_SUPPORTED: System Power Management attempted
+without driver procfs suspend interface` line on a clean boot points
+instead at a missing `zz-nvidia-suspend.conf` (common#1176).
 
 ## Verification
 

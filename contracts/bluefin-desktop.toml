@@ -63,6 +63,18 @@ files = [
   # falls back to /usr/share/pixmaps/fedora-gdm-logo.png from fedora-logos,
   # and the login screen shows the Fedora wordmark instead of Bluefin (#378).
   "/etc/dconf/db/gdm.d/01-bluefin-gdm-logo",
+  # NVreg_DynamicPowerManagement=0x01 — the GSP firmware's default 0x02
+  # crashes during the unload phase of suspend on Turing+ hardware with the
+  # 595.x open kernel modules that Utah builds from NVIDIA's `.run`
+  # installer, leaving the user with a black screen and a hung
+  # systemd-suspend.service (#492). The option is inert on flavors without
+  # the nvidia module, so this assertion is safe on every image. The file
+  # lives in shared/ alongside common#1176's zz-nvidia-suspend.conf, which
+  # pins UseKernelSuspendNotifiers=1 and TemporaryFilePath=/var/tmp; the
+  # zz- prefix keeps this assignment sorted after both so it wins any
+  # duplicate. See docs/skills/kernel-cache.md "The NVIDIA suspend / PM
+  # quirk".
+  "/usr/lib/modprobe.d/zz-nvidia-pm.conf",
 ]
 
 [configuration.file_contains]
@@ -84,6 +96,13 @@ files = [
 "/etc/dconf/db/gdm.d/01-bluefin-gdm-logo" = [
   "[org/gnome/login-screen]",
   "logo='/usr/share/pixmaps/bluefin-gdm-logo.png'",
+]
+# The PM quirk pins the option to 0x01 specifically. Asserting the literal
+# form catches both regressions (the option removed) and silent drift to
+# 0x02 (the default that crashes). A 0x03 value or a typo would also fail
+# this assertion.
+"/usr/lib/modprobe.d/zz-nvidia-pm.conf" = [
+  "options nvidia NVreg_DynamicPowerManagement=0x01",
 ]
 
 [flatpak]
