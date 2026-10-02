@@ -51,6 +51,11 @@ DEFAULT_REPORT_DIR = "/usr/share/utah"
 # is what the report quotes: it says which package factory the NEVRAs came from
 # without needing a build argument plumbed through every stage.
 FACTORY_REPO_PATH = "/etc/yum.repos.d/utah-packages.repo"
+# Where the composed image's runtime RPM repositories live. --check works
+# against the source repo files in packages/; the on-image run scans this
+# directory so repo files shipped by the Hummingbird base image are subject
+# to the same allowlist as the ones Utah itself copies in (#454).
+RUNTIME_REPOS_DIR = Path("/etc/yum.repos.d")
 FACTORY_PIN_RE = re.compile(r"^# factory-pin: (?P<digest>\S+)\s*$", re.MULTILINE)
 
 DISABLED_VALUES: frozenset[str] = frozenset({"0", "false", "no", "off"})
@@ -734,6 +739,22 @@ def main() -> int:
         )
         for err in attestation_errors:
             print(f"  - {err}", file=sys.stderr)
+        return 1
+
+    # Attest the composed image's /etc/yum.repos.d against the same allowlist
+    # --check already applies to packages/ (#454). The Hummingbird base image
+    # ships its own repo files; without this scan they pass into the runtime
+    # unattested -- the issue's "fedora or any unapproved enabled RPM
+    # repository" claim covers them too. check_mode=False because the runtime
+    # image never carries a builder-only repo file; the v4l2loopback stage's
+    # fedora-44.repo is never copied into this layer (Containerfile, v4l2 stage).
+    repo_errors = verify_repository_policy(
+        RUNTIME_REPOS_DIR, allowed_repos,
+        expected_baseurls=repo_baseurls, check_mode=False,
+    )
+    if repo_errors:
+        for err in repo_errors:
+            print(f"ERROR: {err}", file=sys.stderr)
         return 1
 
     report_dir = Path(os.environ.get("UTAH_REPORT_DIR", DEFAULT_REPORT_DIR))
