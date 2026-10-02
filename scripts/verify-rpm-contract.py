@@ -23,6 +23,7 @@ import datetime
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tomllib
@@ -331,6 +332,10 @@ def check_repo_sections(
     errors: list[str] = []
     for section_name in parser.sections():
         if not is_repo_enabled(parser.get(section_name, "enabled", fallback="1")):
+            if section_name in allowed_repos:
+                errors.extend(repo_security_option_errors(section_name, parser, source))
+                if expected_baseurls is not None:
+                    errors.extend(repo_pin_errors(section_name, parser, source, expected_baseurls))
             continue
         if section_name in allowed_repos:
             errors.extend(repo_security_option_errors(section_name, parser, source))
@@ -351,6 +356,36 @@ def check_repo_sections(
     return errors
 
 
+def builder_only_repo_files(repos_dir: Path) -> set[Path]:
+    """Only skip marked files copied into builders, never into the final stage."""
+    root = repos_dir.parent
+    containerfile = root / "Containerfile"
+    if not containerfile.is_file():
+        return set()
+    stages: list[set[Path]] = []
+    text = containerfile.read_text(encoding="utf-8").replace("\\\n", " ")
+    for line in text.splitlines():
+        words = shlex.split(line, comments=True)
+        if not words:
+            continue
+        if words[0].upper() == "FROM":
+            stages.append(set())
+        elif words[0].upper() == "COPY" and stages:
+            # Cross-stage sources are not checkout paths and cannot authorize a skip.
+            if any(word.startswith("--from=") for word in words):
+                continue
+            sources = [word for word in words[1:-1] if not word.startswith("--")]
+            for source in sources:
+                for path in root.glob(source):
+                    if path.is_dir():
+                        stages[-1].update(p.resolve() for p in path.rglob("*.repo"))
+                    elif path.suffix == ".repo":
+                        stages[-1].add(path.resolve())
+    if not stages:
+        return set()
+    return set().union(*stages[:-1]) - stages[-1]
+
+
 def verify_repository_policy(
     repos_dir: Path,
     allowed_repos: set[str],
@@ -360,13 +395,14 @@ def verify_repository_policy(
 ) -> list[str]:
     """Prove the system exposes only explicitly allowed runtime RPM repositories.
 
-    In check_mode, a builder-only repository (marked `# builder-only: true`) is
-    skipped: it exists in packages/ for the kernel-builder stage but is never
-    enabled at runtime.
+    In check_mode, a marked builder-only file is skipped only when Containerfile
+    copies it into a builder and not into the final runtime stage. A comment
+    alone cannot exempt a runtime repository from policy.
     """
     errors: list[str] = []
     if not repos_dir.is_dir():
         return errors
+    builder_files = builder_only_repo_files(repos_dir) if check_mode else set()
     for repo_file in sorted(repos_dir.glob("*.repo")):
         try:
             file_text = repo_file.read_text(encoding="utf-8", errors="replace")
@@ -374,7 +410,9 @@ def verify_repository_policy(
             errors.append(f"Could not read repo file {repo_file}: {e}")
             continue
         if check_mode and "# builder-only: true" in file_text:
-            continue
+            if repo_file.resolve() in builder_files:
+                continue
+            errors.append(f"Builder-only repository {repo_file.name} has no exclusive builder COPY")
         parser = configparser.ConfigParser(interpolation=None)
         try:
             parser.read_string(file_text)
@@ -602,6 +640,16 @@ def main() -> int:
         return 1
     factory_packages = set(section(overlay, "factory"))
     factory_parity = set(section(overlay, "factory", "parity"))
+    # [factory].packages is the GNOME identity contract; other sections use
+    # explicit factory buckets (currently parity), never an inert declaration.
+    for pkg in factory_packages:
+        assert pkg in set(section(overlay, "gnome")), (
+            f"Factory package '{pkg}' is not declared in the [gnome] section"
+        )
+    for pkg in factory_parity:
+        assert pkg in set(section(overlay, "parity")), (
+            f"Factory parity package '{pkg}' is not declared in the [parity] section"
+        )
 
     package_sections: dict[str, str] = {}
     for p in bluefin:
@@ -626,7 +674,7 @@ def main() -> int:
     if args.check:
         assert len(set(expected)) == len(expected), "RPM contract contains duplicate package names"
         for pkg in factory_packages:
-            assert pkg in expected, f"Factory package '{pkg}' not in expected contract packages"
+            assert pkg in gnome, f"Factory package '{pkg}' is not declared in the [gnome] section"
         for pkg in factory_parity:
             assert pkg in parity, (
                 f"Factory parity package '{pkg}' is not declared in the [parity] section"

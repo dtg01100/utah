@@ -70,11 +70,16 @@ if ! declare -F version-script-check >/dev/null; then
 fi
 ```
 
-As of this writing only `20-home-labels.sh` and `05-bootupctl-adopt.sh` carry
-the shim. The other Utah hooks (`10-tailscale.sh`,
-`11-framework-ucsi-workaround.sh`, `99-flatpaks.sh`,
+As of this writing `20-home-labels.sh`, `05-bootupctl-adopt.sh` and
+`user-setup.hooks.d/30-ghostty.sh` carry the shim. The other Utah hooks
+(`10-tailscale.sh`, `11-framework-ucsi-workaround.sh`, `99-flatpaks.sh`,
 `user-setup.hooks.d/20-framework.sh`) still call the legacy `version-script`
 helper, pending #259.
+
+`30-ghostty.sh` is the case that shows why the legacy gate is not good enough
+for a body that moves files: it migrates the user's only real Ghostty config
+out of the flatpak's per-app directory, so a body that aborts part-way must get
+another attempt rather than burn the stamp on a half-done migration.
 
 ## First-boot hook inventory
 
@@ -88,15 +93,20 @@ use.
 | `05-bootupctl-adopt.sh` | Run `bootupctl adopt-and-update` on first boot so a switched-into-Utah system sees its on-disk shim and GRUB as managed by `bootupd`. Skips live sessions (`/sysroot` on `erofs`/`squashfs`) and image variants without `bootupctl` installed, both without committing so a later switch retries. Tracked by #363. |
 | `10-tailscale.sh` | Set the local user as the Tailscale operator. |
 | `11-framework-ucsi-workaround.sh` | Append the `usbcore.autosuspend=-1` karg on Intel-Core-Ultra Frameworks. |
-| `20-home-labels.sh` | Relabel `/var/home` once on systems installed before #261. |
+| `20-home-labels.sh` | Relabel `/var/home` once on systems installed before #261, repairing a mis-keyed active `file_contexts.homedirs` first (#474). |
 | `99-flatpaks.sh` | Drop the Firefox system-config defaults at first boot. |
 
 `05-bootupctl-adopt.sh` is the canonical example of a transient-skip body:
 each guard (`command -v bootupctl`, the live-session check) exits without
 committing so a later `bootc switch` that brings bootupctl in or moves off
-the live root retries cleanly. `20-home-labels.sh` is the deliberate-skip
-example: a `restorecon` that finds no work to do commits and stops
-re-running.
+the live root retries cleanly. `20-home-labels.sh` commits only after it
+verifies the real on-disk label, not merely that `restorecon` exited zero
+(#474): `file_contexts.subs_dist` aliases `/var/home` to `/home`, so a rule
+keyed on the wrong root is unreachable and `restorecon` silently relabels
+nothing. The hook detects that condition by comparing the active
+`file_contexts.homedirs` against the image's own `/usr/etc` default,
+reinstalls the pristine copy when they disagree on the home root, and only
+then trusts a post-`restorecon` `stat` of `/var/home`.
 
 ## Tests
 
@@ -105,6 +115,12 @@ re-running.
 contract on `05-bootupctl-adopt.sh` and additionally drives the real hook
 against fake `libsetup.sh` and `bootupctl` stubs for the four state
 transitions (fresh install, re-run after commit, live session, missing
-`bootupctl`). Run the suite with `just test`. `just check` syntax-checks
-every hook (`bash -n`) through `scripts/check-script-syntax.py`; there is no
-shellcheck gate in the Justfile or CI.
+`bootupctl`). `tests/test_ghostty_hook.py` follows the same shape for
+`user-setup.hooks.d/30-ghostty.sh`, driving it against scratch homes for the
+fresh, migrate, already-symlinked and reverse-symlink (`~/.config/ghostty`
+pointing into the per-app dir) transitions, plus the two user-managed layouts
+the hook must not disturb: the per-app path symlinked at a dotfiles directory,
+and both paths symlinked at one. Run the suite with `just test`.
+`just check` syntax-checks every hook (`bash -n`) through
+`scripts/check-script-syntax.py`; there is no shellcheck gate in the Justfile
+or CI.
