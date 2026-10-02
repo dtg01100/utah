@@ -31,9 +31,14 @@ def _just_version() -> tuple[int, ...] | None:
     if len(parts) < 2 or parts[0] != "just":
         return None
     try:
-        return tuple(int(piece) for piece in parts[1].split("."))
+        components = tuple(int(piece) for piece in parts[1].split("."))
     except ValueError:
         return None
+    # Pad to three components so the floor comparison is consistent with the
+    # baseline check (which parses NEVR into three components); a two-digit
+    # `just X.Y` string would otherwise compare (1, 56) < (1, 56, 0) as True
+    # at the exact floor and spuriously skip the whole class.
+    return components + (0,) * (3 - len(components))
 
 
 _just = shutil.which("just")
