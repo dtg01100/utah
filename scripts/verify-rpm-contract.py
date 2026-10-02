@@ -1,105 +1,647 @@
 #!/usr/bin/env python3
 """Assert that Utah actually contains its Bluefin and GNOME 51 RPM contracts.
 
-Mirrors assert_packages_present from projectbluefin/bluefin's
-build_files/shared/package-lib.sh: name every missing package, once.
+Beyond package presence, this is the supply-chain attestation for issue #21:
+GNOME packages carry the promised major version and an approved factory
+(`.bfin`) or Hummingbird (`.hum`) identity; parity packages cannot silently
+resolve from an unapproved Fedora repository; the system exposes only the
+runtime repositories the manifest allows; and the resolved package-origin/NEVRA
+set is retained as a report with build provenance.
 """
 
 from __future__ import annotations
 
 import argparse
+import configparser
+import datetime
+import json
 import os
+import re
 import subprocess
 import sys
 import tomllib
 from pathlib import Path
+from typing import Any
 
-# The NVIDIA userspace no longer arrives as RPMs. UBlue's akmods bundle used to
-# supply nvidia-driver, nvidia-driver-cuda and nvidia-container-toolkit, but it
-# publishes nothing for Hummingbird's kernel, so install-nvidia.sh builds the
-# open module from NVIDIA's own source and installs the matching userspace from
-# the same payload. Those files are what the image needs; the RPM names were
-# only ever how they happened to arrive.
-#
-# nvidia-container-toolkit still arrives as an RPM, from NVIDIA own repository
-# rather than from the akmods bundle, so it is asserted by name. It was recorded
-# here as a real loss on the reasoning that the bundle was unusable; the bundle
-# was one source, not the only one.
-NVIDIA_PACKAGES: tuple[str, ...] = ("nvidia-container-toolkit",)
+NVIDIA_PACKAGES = (
+    "nvidia-container-toolkit",
+)
+
+CONTRACT_PATH = "/usr/share/utah/contract.txt"
+DEFAULT_REPORT_DIR = "/usr/share/utah"
+DEFAULT_BUILD_EPOCH = 1104240000  # 2004-12-28T13:20:00Z sentinel
+
+DISABLED_VALUES: frozenset[str] = frozenset({"0", "false", "no", "off"})
 
 
-def section(path: Path, name: str) -> list[str]:
-    data = tomllib.loads(path.read_text())
-    return list(data.get(name, {}).get("packages", []))
+def load_contract(manifest: Path) -> list[str]:
+    """The list of package names this image must contain, in manifest order."""
+    return list(tomllib.loads(manifest.read_text(encoding="utf-8")).keys())
 
 
-def is_installed(pkg: str) -> bool:
-    return subprocess.run(
-        ["rpm", "-q", pkg], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-    ).returncode == 0
+def section(overlay: Path, name: str) -> list[str]:
+    """A named package list from an overlay manifest, in the order written."""
+    data = tomllib.loads(overlay.read_text(encoding="utf-8"))
+    if name not in data or "packages" not in data[name]:
+        return []
+    return list(data[name]["packages"])
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--check", action="store_true")
-    parser.add_argument("manifest", type=Path)
-    parser.add_argument("overlay", type=Path, nargs="?", default=None)
-    args = parser.parse_args()
-    overlay = args.overlay or args.manifest.with_name("utah.toml")
+def is_installed(package: str) -> bool:
+    """Whether an RPM named `package` is installed (rpm -q exit status)."""
+    return subprocess.run(["rpm", "-q", package], capture_output=True).returncode == 0
 
-    flavor = os.environ.get("IMAGE_FLAVOR", "main")
-    unavailable = set(section(overlay, "unavailable"))
 
-    # Prefer the set install-packages.py actually resolved. Recomputing it here
-    # is what let the two drift once: install added [fedora_v<major>] for the
-    # running release and this check never did, so a contract package was
-    # installed but never verified -- it could have gone missing silently. The
-    # file is written by the install step, so in an image build it is always
-    # present; the manifest path below is the off-image fallback for --check,
-    # which asserts nothing about installation.
-    resolved = Path("/usr/share/utah/contract.txt")
-    if resolved.exists():
-        contract = [line for line in resolved.read_text().split() if line]
+def is_repo_enabled(enabled_val: str) -> bool:
+    """Normalize boolean repository enabled semantics, failing closed on unknown values."""
+    return enabled_val.strip().lower() not in DISABLED_VALUES
+
+
+def determine_origin(pkg: str, release: str) -> str:
+    """Classify a package's origin from its release identity, not its name.
+
+    The NVIDIA case is decided by membership in NVIDIA_PACKAGES rather than by
+    searching for "nvidia" inside the release string, which a coincidental
+    rebuild could trip.
+    """
+    if ".bfin" in release:
+        return "factory"
+    if ".hum" in release:
+        return "hummingbird"
+    if pkg in NVIDIA_PACKAGES:
+        return "nvidia"
+    if ".fc" in release:
+        return "fedora"
+    return "unknown"
+
+
+def query_packages(packages: list[str]) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    """Query rpm for NEVRA attributes of requested packages.
+
+    rpm -q prints one line per installed copy of a name; a multilib pair is two
+    installs of one package. Every copy is retained so neither escapes the
+    release-identity checks.
+    """
+    if not packages:
+        return {}, []
+    try:
+        res = subprocess.run(
+            ["rpm", "-q", "--qf", "%{NAME}|%{EPOCHNUM}|%{VERSION}|%{RELEASE}|%{ARCH}\n", *packages],
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        res = None
+
+    installed: dict[str, dict[str, Any]] = {}
+    if res and res.stdout:
+        for line in res.stdout.splitlines():
+            line = line.strip()
+            if not line or "|" not in line:
+                continue
+            parts = line.split("|")
+            if len(parts) != 5:
+                continue
+            name, epoch, version, release, arch = parts
+            nevra = (
+                f"{name}-{version}-{release}.{arch}"
+                if epoch in ("", "0", "(none)")
+                else f"{name}-{epoch}:{version}-{release}.{arch}"
+            )
+            install = {
+                "name": name, "epoch": epoch, "version": version,
+                "release": release, "arch": arch, "nevra": nevra,
+                "origin": determine_origin(name, release),
+            }
+            existing = installed.get(name)
+            if existing is None:
+                installed[name] = {**install, "installs": [install]}
+            else:
+                existing["installs"].append(install)
+    missing = [p for p in packages if p not in installed]
+    return installed, missing
+
+
+def installs_of(info: dict[str, Any]) -> list[dict[str, str]]:
+    """Every installed copy recorded for a package name, including multilib pairs."""
+    return info.get("installs") or [info]
+
+
+def verify_gnome_contract(
+    gnome_packages: list[str],
+    installed: dict[str, dict[str, Any]],
+    major_versions: dict[str, str],
+    factory_packages: set[str],
+) -> list[str]:
+    """Assert GNOME required major versions and factory/Hummingbird release identity.
+
+    Which GNOME packages must carry `.bfin` is decided by `[factory]` in
+    packages/utah.toml, so moving a package to or from the factory is a manifest
+    edit, not a code edit. A factory package must be a factory rebuild; a
+    non-factory package comes from Hummingbird but a factory rebuild is also
+    approved; a bare Fedora build is never approved.
+    """
+    errors: list[str] = []
+    for pkg in gnome_packages:
+        if pkg not in installed:
+            continue
+        for info in installs_of(installed[pkg]):
+            ver, rel = info["version"], info["release"]
+            expected_major = major_versions.get(pkg)
+            if expected_major:
+                match = re.match(r"^(\d+)", ver)
+                if not match or match.group(1) != str(expected_major):
+                    errors.append(
+                        f"GNOME package '{pkg}' version '{ver}' does not match required "
+                        f"major version '{expected_major}'"
+                    )
+            if pkg in factory_packages:
+                if ".bfin" not in rel:
+                    errors.append(
+                        f"GNOME package '{pkg}' release '{rel}' lacks expected factory "
+                        "release identity (.bfin)"
+                    )
+            elif ".bfin" not in rel and ".hum" not in rel:
+                errors.append(
+                    f"GNOME package '{pkg}' resolved from unapproved release '{rel}' "
+                    "(expected Hummingbird `.hum` or factory `.bfin`)"
+                )
+            if ".fc" in rel and ".hum" not in rel and ".bfin" not in rel:
+                errors.append(
+                    f"GNOME package '{pkg}' resolved from unapproved Fedora release '{rel}'"
+                )
+    return errors
+
+
+def verify_parity_origin(
+    parity_packages: list[str],
+    installed: dict[str, dict[str, Any]],
+) -> list[str]:
+    """Assert parity packages cannot silently resolve from another repository.
+
+    Parity packages are inherited from Hummingbird's repository. A `.fc` release
+    without the `.hum` Hummingbird tag means DNF pulled it from the base image's
+    Fedora repository instead of the pinned Hummingbird one.
+    """
+    errors: list[str] = []
+    for pkg in parity_packages:
+        if pkg not in installed:
+            continue
+        for info in installs_of(installed[pkg]):
+            rel = info["release"]
+            if ".fc" in rel and ".hum" not in rel and ".bfin" not in rel:
+                errors.append(
+                    f"Parity package '{pkg}' resolved from unapproved Fedora release '{rel}'"
+                )
+    return errors
+
+
+def normalize_baseurl(url: str) -> str:
+    """Normalize a baseurl so two spellings of the same URL compare equal."""
+    value = url.strip().rstrip("/")
+    if not value:
+        return ""
+    value = re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", r"$\1", value)
+    scheme, sep, rest = value.partition("://")
+    if not sep:
+        return value.lower()
+    host, slash, path = rest.partition("/")
+    return f"{scheme.lower()}://{host.lower()}{slash}{path}"
+
+
+def split_baseurls(raw: str) -> list[str]:
+    """Split a baseurl option into the origins DNF would fetch from."""
+    return [entry for entry in re.split(r"[\s,]+", raw.strip()) if entry]
+
+
+def repo_pin_errors(
+    section_name: str,
+    parser: configparser.ConfigParser,
+    source: str,
+    expected_baseurls: dict[str, tuple[str, ...]],
+) -> list[str]:
+    """Check that an allowlisted repository serves the baseurl it is pinned to."""
+    declared = expected_baseurls.get(section_name)
+    if not declared:
+        return [
+            f"Allowlisted repository '{section_name}' is enabled in {source} but has "
+            "no pinned baseurl in [repositories.baseurls]; an id on the allowlist is "
+            "not approval of an unknown origin"
+        ]
+    baseurl = parser.get(section_name, "baseurl", fallback="").strip()
+    indirection = next(
+        (key for key in ("metalink", "mirrorlist")
+         if parser.get(section_name, key, fallback="").strip()),
+        "",
+    )
+    if indirection:
+        return [
+            f"Allowlisted repository '{section_name}' is enabled in {source} and "
+            f"resolves via {indirection}; DNF merges those mirrors with any baseurl the "
+            f"section declares, so only a pinned baseurl is approved "
+            f"(expected one of: {', '.join(sorted(declared))})"
+        ]
+    if not baseurl:
+        return [
+            f"Allowlisted repository '{section_name}' is enabled in {source} and declares "
+            "no baseurl; only a pinned baseurl is approved (expected one of: "
+            f"{', '.join(sorted(declared))})"
+        ]
+    pinned = {normalize_baseurl(url) for url in declared}
+    unpinned = [url for url in split_baseurls(baseurl) if normalize_baseurl(url) not in pinned]
+    if unpinned:
+        listed = ", ".join(f"'{url}'" for url in unpinned)
+        return [
+            f"Repository '{section_name}' is enabled in {source} with unpinned baseurl "
+            f"{listed}; expected one of: {', '.join(sorted(declared))}"
+        ]
+    return []
+
+
+def repo_security_option_errors(
+    section_name: str,
+    parser: configparser.ConfigParser,
+    source: str,
+) -> list[str]:
+    """Name options that reroute or weaken an allowlisted repository's fetch."""
+    errors: list[str] = []
+    proxy = parser.get(section_name, "proxy", fallback="").strip()
+    if proxy:
+        errors.append(
+            f"Allowlisted repository '{section_name}' is enabled in {source} with "
+            f"proxy={proxy}; a proxy routes fetches through an origin the allowlist "
+            "does not name"
+        )
+    sslverify = parser.get(section_name, "sslverify", fallback="").strip()
+    if sslverify.lower() in DISABLED_VALUES:
+        errors.append(
+            f"Allowlisted repository '{section_name}' is enabled in {source} with "
+            f"sslverify={sslverify}; disabling TLS verification accepts any certificate "
+            "the origin presents"
+        )
+    return errors
+
+
+def check_repo_sections(
+    parser: configparser.ConfigParser,
+    source: str,
+    allowed_repos: set[str],
+    *,
+    skip_sections: frozenset[str] = frozenset(),
+    expected_baseurls: dict[str, tuple[str, ...]] | None,
+) -> list[str]:
+    """Apply the allowlist to every section of an already-parsed config."""
+    errors: list[str] = []
+    for section_name in parser.sections():
+        if section_name in skip_sections:
+            continue
+        if not is_repo_enabled(parser.get(section_name, "enabled", fallback="1")):
+            continue
+        if section_name in allowed_repos:
+            errors.extend(repo_security_option_errors(section_name, parser, source))
+        baseurl = parser.get(section_name, "baseurl", fallback="").lower()
+        is_fedora = "fedora" in section_name.lower() or "fedora" in baseurl
+        if is_fedora:
+            errors.append(
+                f"Fedora repository '{section_name}' is enabled in {source}; Fedora "
+                "repositories are forbidden at runtime"
+            )
+        elif section_name not in allowed_repos:
+            errors.append(
+                f"Unapproved repository '{section_name}' is enabled in {source}; "
+                f"allowed repositories: {sorted(allowed_repos)}"
+            )
+        elif expected_baseurls is not None:
+            errors.extend(repo_pin_errors(section_name, parser, source, expected_baseurls))
+    return errors
+
+
+def verify_repository_policy(
+    repos_dir: Path,
+    allowed_repos: set[str],
+    *,
+    expected_baseurls: dict[str, tuple[str, ...]] | None,
+    check_mode: bool = False,
+) -> list[str]:
+    """Prove the system exposes only explicitly allowed runtime RPM repositories.
+
+    In check_mode, a builder-only repository (marked `# builder-only: true`) is
+    skipped: it exists in packages/ for the kernel-builder stage but is never
+    enabled at runtime.
+    """
+    errors: list[str] = []
+    if not repos_dir.is_dir():
+        return errors
+    for repo_file in sorted(repos_dir.glob("*.repo")):
+        try:
+            file_text = repo_file.read_text(encoding="utf-8", errors="replace")
+        except OSError as e:
+            errors.append(f"Could not read repo file {repo_file}: {e}")
+            continue
+        if check_mode and "# builder-only: true" in file_text:
+            continue
+        parser = configparser.ConfigParser(interpolation=None)
+        try:
+            parser.read_string(file_text)
+        except Exception as e:  # noqa: BLE001 - report and continue scanning
+            errors.append(f"Could not parse repo file {repo_file}: {e}")
+            continue
+        errors.extend(
+            check_repo_sections(
+                parser, repo_file.name, allowed_repos,
+                expected_baseurls=expected_baseurls,
+            )
+        )
+    return errors
+
+
+def resolve_build_timestamp(environ: dict[str, str] | None = None) -> tuple[str, str]:
+    """Return the report's build stamp and where it was read from."""
+    env = os.environ if environ is None else environ
+    raw = env.get("SOURCE_DATE_EPOCH")
+    if raw:
+        try:
+            epoch = int(raw)
+            return (
+                datetime.datetime.fromtimestamp(epoch, tz=datetime.timezone.utc).isoformat(),
+                "SOURCE_DATE_EPOCH",
+            )
+        except (ValueError, OverflowError, OSError):
+            reason = f"unusable SOURCE_DATE_EPOCH={raw!r}"
+    else:
+        reason = "SOURCE_DATE_EPOCH is unset"
+    print(
+        f"WARNING: {reason}; stamping the package-origin report with the fixed "
+        f"epoch {DEFAULT_BUILD_EPOCH} instead of the wall clock",
+        file=sys.stderr,
+    )
+    return (
+        datetime.datetime.fromtimestamp(
+            DEFAULT_BUILD_EPOCH, tz=datetime.timezone.utc
+        ).isoformat(),
+        "sentinel-epoch",
+    )
+
+
+def generate_provenance_report(
+    installed: dict[str, dict[str, Any]],
+    flavor: str,
+    allowed_repos: set[str],
+    package_sections: dict[str, str],
+    output_dir: Path = Path(DEFAULT_REPORT_DIR),
+) -> dict[str, Any]:
+    """Generate and retain the resolved package-origin/NEVRA report with build provenance."""
+    packages_data: dict[str, dict[str, Any]] = {}
+    factory_count = hummingbird_count = other_count = 0
+    for name in sorted(installed.keys()):
+        info = installed[name]
+        origin = info["origin"]
+        if origin == "factory":
+            factory_count += 1
+        elif origin == "hummingbird":
+            hummingbird_count += 1
+        else:
+            other_count += 1
+        packages_data[name] = {
+            "name": info["name"], "epoch": info["epoch"], "version": info["version"],
+            "release": info["release"], "arch": info["arch"], "nevra": info["nevra"],
+            "origin": origin, "section": package_sections.get(name, "unknown"),
+        }
+        copies = installs_of(info)
+        if len(copies) > 1:
+            packages_data[name]["installs"] = [
+                {"nevra": c["nevra"], "release": c["release"],
+                 "arch": c["arch"], "origin": c["origin"]} for c in copies
+            ]
+    timestamp, timestamp_source = resolve_build_timestamp()
+    report: dict[str, Any] = {
+        "build_provenance": {
+            "flavor": flavor, "image": os.environ.get("IMAGE_NAME", "utah"),
+            "version": os.environ.get("VERSION", "testing"),
+            "timestamp": timestamp, "timestamp_source": timestamp_source,
+            "contract_packages": len(installed),
+            "factory_packages_count": factory_count,
+            "hummingbird_packages_count": hummingbird_count,
+            "other_packages_count": other_count,
+            "allowed_repositories": sorted(allowed_repos),
+        },
+        "packages": packages_data,
+    }
+    output_dir.mkdir(parents=True, exist_ok=True)
+    json_file = output_dir / "package-origins.json"
+    txt_file = output_dir / "package-origins.txt"
+    json_file.write_text(json.dumps(report, indent=2) + "\n")
+    lines = [
+        "# Utah Package Origin and NEVRA Report", f"# Flavor: {flavor}",
+        f"# Contract packages: {len(installed)}", f"# Factory rebuilds (.bfin): {factory_count}",
+        f"# Hummingbird packages (.hum): {hummingbird_count}", f"# Other: {other_count}",
+        f"# Generated: {timestamp}", "",
+        f"{'NAME':<35} {'NEVRA':<50} {'ORIGIN':<15} {'SECTION':<15}",
+        f"{'-'*35} {'-'*50} {'-'*15} {'-'*15}",
+    ]
+    for name, data in packages_data.items():
+        for copy in data.get("installs") or [data]:
+            lines.append(
+                f"{data['name']:<35} {copy['nevra']:<50} "
+                f"{copy['origin']:<15} {data['section']:<15}"
+            )
+    txt_file.write_text("\n".join(lines) + "\n")
+    return report
+
+
+def _parse_sections(overlay: Path, resolved: list[str] | None, manifest: Path) -> tuple[list, list, list, list, list]:
+    """Split the contract into bluefin/gnome/parity/hardware/services buckets.
+
+    When `resolved` is given (an image build), the install set is the source of
+    truth -- asserting it avoids the drift where install added something this
+    check never recomputed. Otherwise the manifests are the source: the
+    bluefin parity packages live in the manifest's [fedora] section, and the
+    desktop/parity/service packages are read straight from the overlay sections.
+    """
+    if resolved is not None:
         gnome_names = set(section(overlay, "gnome"))
         parity_names = set(section(overlay, "parity"))
         hardware_names = set(section(overlay, "hardware"))
         service_names = set(section(overlay, "services"))
         overlay_names = gnome_names | parity_names | hardware_names | service_names
-        bluefin = [p for p in contract if p not in overlay_names]
-        gnome = [p for p in contract if p in gnome_names]
-        parity = [p for p in contract if p in parity_names]
-        hardware = [p for p in contract if p in hardware_names]
-        services = [p for p in contract if p in service_names]
+        return (
+            [p for p in resolved if p not in overlay_names],
+            [p for p in resolved if p in gnome_names],
+            [p for p in resolved if p in parity_names],
+            [p for p in resolved if p in hardware_names],
+            [p for p in resolved if p in service_names],
+        )
+    unavailable = set(section(overlay, "unavailable"))
+    return (
+        [p for p in section(manifest, "fedora") if p not in unavailable],
+        section(overlay, "gnome"),
+        section(overlay, "parity"),
+        section(overlay, "hardware"),
+        section(overlay, "services"),
+    )
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--check", action="store_true")
+    parser.add_argument(
+        "--no-report", action="store_true",
+        help="verify only; do not write the retained provenance report.",
+    )
+    parser.add_argument("manifest", type=Path)
+    parser.add_argument("overlay", type=Path, nargs="?", default=None)
+    args = parser.parse_args()
+    overlay = args.overlay or args.manifest.with_name("utah.toml")
+
+    if not overlay.exists():
+        print(f"ERROR: Overlay manifest '{overlay}' does not exist", file=sys.stderr)
+        return 1
+
+    flavor = os.environ.get("IMAGE_FLAVOR", "main")
+    # Prefer the set install-packages.py actually resolved. Recomputing it here
+    # is what let the two drift once: install added [fedora_v<major>] for the
+    # running release and this check never did, so a contract package was
+    # installed but never verified. The manifest path is the off-image fallback.
+    resolved = Path(CONTRACT_PATH)
+    if resolved.exists():
+        contract = [line for line in resolved.read_text().split() if line]
+        bluefin, gnome, parity, hardware, services = _parse_sections(overlay, contract, args.manifest)
     else:
-        bluefin = [p for p in section(args.manifest, "fedora") if p not in unavailable]
-        gnome = section(overlay, "gnome")
-        parity = section(overlay, "parity")
-        hardware = section(overlay, "hardware")
-        services = section(overlay, "services")
+        bluefin, gnome, parity, hardware, services = _parse_sections(overlay, None, args.manifest)
     nvidia = list(NVIDIA_PACKAGES) if "nvidia" in flavor else []
     expected = [*bluefin, *gnome, *parity, *hardware, *services, *nvidia]
 
+    overlay_data = tomllib.loads(overlay.read_text())
+    try:
+        major_versions = overlay_data["gnome"]["versions"]
+    except KeyError:
+        print(f"ERROR: Overlay manifest '{overlay}' is missing [gnome.versions] section",
+              file=sys.stderr)
+        return 1
+    try:
+        allowed_repos = set(overlay_data["repositories"]["allowed"])
+    except KeyError:
+        print(f"ERROR: Overlay manifest '{overlay}' is missing [repositories.allowed] section",
+              file=sys.stderr)
+        return 1
+    try:
+        repo_baseurls = {
+            repo_id: tuple(urls)
+            for repo_id, urls in overlay_data["repositories"]["baseurls"].items()
+        }
+    except KeyError:
+        print(f"ERROR: Overlay manifest '{overlay}' is missing [repositories.baseurls] section",
+              file=sys.stderr)
+        return 1
+    unpinned = sorted(allowed_repos - repo_baseurls.keys())
+    if unpinned:
+        print(
+            f"ERROR: Overlay manifest '{overlay}' allows repositories with no pinned "
+            f"baseurl in [repositories.baseurls]: {', '.join(unpinned)}",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        factory_packages = set(section(overlay, "factory"))
+    except ValueError:
+        factory_packages = set()
+
+    package_sections: dict[str, str] = {}
+    for p in bluefin:
+        package_sections[p] = "bluefin"
+    for p in gnome:
+        package_sections[p] = "gnome"
+    for p in parity:
+        package_sections[p] = "parity"
+    for p in hardware:
+        package_sections[p] = "hardware"
+    for p in services:
+        package_sections[p] = "services"
+    for p in nvidia:
+        package_sections[p] = "nvidia"
+
     print(
         f"Verifying {len(bluefin)} Bluefin packages, {len(gnome)} GNOME desktop packages,"
-        f" {len(parity)} parity packages,"
-        f" {len(hardware)} firmware packages,"
+        f" {len(parity)} parity packages, {len(hardware)} firmware packages,"
         f" {len(services)} desktop service packages, and {len(nvidia)} NVIDIA packages",
         flush=True,
     )
     if args.check:
         assert len(set(expected)) == len(expected), "RPM contract contains duplicate package names"
+        for pkg in factory_packages:
+            assert pkg in expected, f"Factory package '{pkg}' not in expected contract packages"
+        repo_errors = verify_repository_policy(
+            args.manifest.parent, allowed_repos,
+            expected_baseurls=repo_baseurls, check_mode=True,
+        )
+        if repo_errors:
+            for err in repo_errors:
+                print(f"ERROR: {err}", file=sys.stderr)
+            return 1
+        print("RPM contract and repository policy syntax valid.")
         return 0
 
     missing = [pkg for pkg in expected if not is_installed(pkg)]
     if missing:
-        print(
-            f"ERROR: {len(missing)} of {len(expected)} contract packages are not installed:",
-            file=sys.stderr,
-        )
+        print(f"ERROR: {len(missing)} of {len(expected)} contract packages are not installed:",
+              file=sys.stderr)
         for pkg in missing:
             print(f"  - {pkg}", file=sys.stderr)
         return 1
     print(f"All {len(expected)} contract packages are present.")
+
+    installed, missing_nevra = query_packages(expected)
+    if missing_nevra:
+        print(
+            f"ERROR: {len(missing_nevra)} of {len(expected)} contract packages could not be "
+            "queried via RPM:",
+            file=sys.stderr,
+        )
+        for pkg in missing_nevra:
+            print(f"  - {pkg}", file=sys.stderr)
+        return 1
+
+    attestation_errors: list[str] = []
+    attestation_errors.extend(
+        verify_gnome_contract(gnome, installed, major_versions, factory_packages)
+    )
+    attestation_errors.extend(verify_parity_origin(parity, installed))
+
+    if attestation_errors:
+        print(
+            f"ERROR: {len(attestation_errors)} supply-chain / repository contract violation(s):",
+            file=sys.stderr,
+        )
+        for err in attestation_errors:
+            print(f"  - {err}", file=sys.stderr)
+        return 1
+
+    report_dir = Path(os.environ.get("UTAH_REPORT_DIR", DEFAULT_REPORT_DIR))
+    report = None
+    if not args.no_report:
+        try:
+            report = generate_provenance_report(
+                installed, flavor, allowed_repos, package_sections, report_dir
+            )
+        except OSError as err:
+            print(
+                f"ERROR: could not retain provenance report in {report_dir}: {err}",
+                file=sys.stderr,
+            )
+            return 1
+    print(
+        f"All {len(expected)} contract packages verified (GNOME versions, factory rebuilds, "
+        "repository policy)."
+    )
+    if report is None:
+        print("Skipped provenance report retention (--no-report).")
+    else:
+        print(
+            f"Retained provenance report for {len(installed)} packages "
+            f"({report['build_provenance']['factory_packages_count']} factory, "
+            f"{report['build_provenance']['hummingbird_packages_count']} hummingbird) "
+            f"in {report_dir / 'package-origins.json'}."
+        )
 
     if "nvidia" not in flavor:
         return 0

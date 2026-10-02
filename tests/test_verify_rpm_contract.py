@@ -14,12 +14,14 @@ fallback), the filters applied to each, the duplicate-name assertion behind
 
 from __future__ import annotations
 
+import configparser
 import importlib.util
 import io
 import os
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -60,15 +62,45 @@ def write_overlay(
     hardware: list[str] | None = None,
     services: list[str] | None = None,
     unavailable: list[str] | None = None,
+    gnome_versions: dict[str, str] | None = None,
+    repositories: list[str] | None = None,
+    baseurls: dict[str, str] | None = None,
+    factory: list[str] | None = None,
 ) -> Path:
+    """Write a utah.toml overlay that already carries the supply-chain sections.
+
+    The contract verifier requires [gnome.versions] and [repositories.allowed];
+    every overlay the tests build therefore gets those plus a matching
+    [repositories.baseurls]. gnome_versions defaults to major "51" for each
+    desktop package, with gtk4/libadwaita pinned to their own majors, so every
+    GNOME package in the overlay is version-checked unless a test overrides it.
+    """
+    sections = [
+        toml_section("gnome", gnome or []),
+        toml_section("parity", parity or []),
+        toml_section("hardware", hardware or []),
+        toml_section("services", services or []),
+        toml_section("unavailable", unavailable or []),
+    ]
+    versions = gnome_versions or {
+        "gtk4": "4", "libadwaita": "1", **{pkg: "51" for pkg in (gnome or [])}
+    }
+    sections.append("[gnome.versions]\n")
+    for name, major in versions.items():
+        sections.append(f'{name} = "{major}"\n')
+    allowed = repositories or ["public-hummingbird-x86_64-rpms"]
+    sections.append("[repositories]\nallowed = [" + ", ".join(f'"{r}"' for r in allowed) + "]\n")
+    url_map = baseurls or {
+        "public-hummingbird-x86_64-rpms":
+            "https://packages.redhat.com/api/pulp-content/public-hummingbird/x86_64/"
+    }
+    sections.append("[repositories.baseurls]\n")
+    for repo_id, url in url_map.items():
+        sections.append(f'{repo_id} = ["{url}"]\n')
+    if factory:
+        sections.append(toml_section("factory", factory))
     path = directory / "utah.toml"
-    path.write_text(
-        toml_section("gnome", gnome or [])
-        + toml_section("parity", parity or [])
-        + toml_section("hardware", hardware or [])
-        + toml_section("services", services or [])
-        + toml_section("unavailable", unavailable or [])
-    )
+    path.write_text("".join(sections))
     return path
 
 
@@ -227,9 +259,32 @@ class VerifyModeTests(unittest.TestCase):
                  flavor: str = "main") -> tuple[int, str]:
         argv = ["verify-rpm-contract.py", str(manifest), str(overlay)]
         stdout = io.StringIO()
-        with patch.object(self.module, "is_installed", side_effect=lambda p: p in installed), \
+        overlay_data = tomllib.loads(overlay.read_text())
+        gnome_versions = overlay_data.get("gnome", {}).get("versions", {})
+        factory = set(overlay_data.get("factory", {}).get("packages", []))
+
+        def fake_query(packages):
+            result = {}
+            for pkg in packages:
+                if pkg not in installed:
+                    continue
+                major = gnome_versions.get(pkg, "1")
+                release = "1.bfin.x86_64" if pkg in factory else "1.hum.x86_64"
+                version = f"{major}.0"
+                result[pkg] = {
+                    "name": pkg, "epoch": "0", "version": version,
+                    "release": release, "arch": "x86_64",
+                    "nevra": f"{pkg}-{version}-{release}",
+                    "origin": "factory" if pkg in factory else "hummingbird",
+                }
+            return result, []
+
+        report_dir = Path(tempfile.mkdtemp())
+        with patch.object(self.module, "is_installed",
+                          side_effect=lambda p: p in installed), \
+                patch.object(self.module, "query_packages", side_effect=fake_query), \
                 patch.object(sys, "argv", argv), \
-                patch.dict(os.environ, {"IMAGE_FLAVOR": flavor}), \
+                patch.dict(os.environ, {"IMAGE_FLAVOR": flavor, "UTAH_REPORT_DIR": str(report_dir)}), \
                 redirect_stdout(stdout):
             code = self.module.main()
         return code, stdout.getvalue()
@@ -304,11 +359,33 @@ class ResolvedContractTests(unittest.TestCase):
 
             argv = ["verify-rpm-contract.py", str(manifest), str(overlay)]
             stdout = io.StringIO()
+            overlay_data = tomllib.loads(overlay.read_text())
+            gnome_versions = overlay_data.get("gnome", {}).get("versions", {})
+            factory = set(overlay_data.get("factory", {}).get("packages", []))
+
+            def fake_query(packages):
+                result = {}
+                for pkg in packages:
+                    if pkg not in installed:
+                        continue
+                    major = gnome_versions.get(pkg, "1")
+                    release = "1.bfin.x86_64" if pkg in factory else "1.hum.x86_64"
+                    version = f"{major}.0"
+                    result[pkg] = {
+                        "name": pkg, "epoch": "0", "version": version,
+                        "release": release, "arch": "x86_64",
+                        "nevra": f"{pkg}-{version}-{release}",
+                        "origin": "factory" if pkg in factory else "hummingbird",
+                    }
+                return result, []
+
+            report_dir = Path(tempfile.mkdtemp())
             with patch.object(self.module, "Path", redirected), \
                     patch.object(self.module, "is_installed",
                                  side_effect=lambda p: p in installed), \
+                    patch.object(self.module, "query_packages", side_effect=fake_query), \
                     patch.object(sys, "argv", argv), \
-                    patch.dict(os.environ, {"IMAGE_FLAVOR": "main"}), \
+                    patch.dict(os.environ, {"IMAGE_FLAVOR": "main", "UTAH_REPORT_DIR": str(report_dir)}), \
                     redirect_stdout(stdout):
                 code = self.module.main()
         return code, stdout.getvalue()
@@ -440,15 +517,21 @@ class NvidiaImageAssertionTests(unittest.TestCase):
         def fake_run(cmd, *args, **kwargs):
             if list(cmd[:3]) == ["rpm", "-q", "kernel"]:
                 return subprocess.CompletedProcess(cmd, 0, stdout=rpm_kernel_stdout)
+            # query_packages() reads every package's NEVRA with one rpm call.
+            if list(cmd[:3]) == ["rpm", "-q", "--qf"]:
+                release = "1.bfin.x86_64"
+                fields = [f"{name}|0|1.0|{release}|x86_64" for name in cmd[3:]]
+                return subprocess.CompletedProcess(cmd, 0, stdout="\n".join(fields) + "\n")
             raise AssertionError(f"unexpected subprocess call: {cmd}")
 
         argv = ["verify-rpm-contract.py", str(self.manifest), str(self.overlay)]
         stdout, stderr = io.StringIO(), io.StringIO()
+        report_dir = Path(tempfile.mkdtemp())
         with patch.object(self.module, "Path", redirected), \
                 patch.object(self.module, "is_installed", return_value=True), \
                 patch.object(self.module.subprocess, "run", fake_run), \
                 patch.object(sys, "argv", argv), \
-                patch.dict(os.environ, {"IMAGE_FLAVOR": flavor}), \
+                patch.dict(os.environ, {"IMAGE_FLAVOR": flavor, "UTAH_REPORT_DIR": str(report_dir)}), \
                 patch.object(sys, "stderr", stderr), \
                 redirect_stdout(stdout):
             code = self.module.main()
@@ -572,6 +655,251 @@ class NvidiaImageAssertionTests(unittest.TestCase):
         self.assertNotIn("NVIDIA", out.split("Verifying", 1)[-1].split("\n", 1)[-1])
 
 
+class SupplyChainTests(unittest.TestCase):
+    """The supply-chain attestation added for issue #21.
+
+    These exercise the functions the contract verifier gained on top of the
+    original presence check: release-identity classification, GNOME version
+    attestation, parity-origin attestation, and repository-policy enforcement.
+    Every test runs offline against in-memory package dicts and fake .repo
+    files -- no image build required.
+    """
+
+    def setUp(self) -> None:
+        self.module = load_module()
+
+    @staticmethod
+    def _parser(fields: dict[str, str]) -> configparser.ConfigParser:
+        parser = configparser.ConfigParser(interpolation=None)
+        parser["repo"] = fields
+        return parser
+
+    def test_determine_origin_factory_from_bfin_release(self) -> None:
+        self.assertEqual(self.module.determine_origin("gnome-shell", "51.0-1.bfin.x86_64"), "factory")
+
+    def test_determine_origin_hummingbird_from_hum_release(self) -> None:
+        self.assertEqual(self.module.determine_origin("fastfetch", "1.0-1.hum.x86_64"), "hummingbird")
+
+    def test_determine_origin_fedora_from_fc_release(self) -> None:
+        self.assertEqual(self.module.determine_origin("coreutils", "9.0-1.fc44.x86_64"), "fedora")
+
+    def test_determine_origin_unknown_when_release_has_no_identity(self) -> None:
+        self.assertEqual(self.module.determine_origin("something", "1.0-1.x86_64"), "unknown")
+
+    def test_determine_origin_prefers_bfin_over_fedora(self) -> None:
+        """A release carrying both identities is factory, not Fedora."""
+        self.assertEqual(self.module.determine_origin("gnome-shell", "51.0-1.fc44.bfin.x86_64"), "factory")
+
+    def test_gnome_contract_passes_for_promised_major(self) -> None:
+        installed = {"gnome-shell": {"release": "51.2-1.bfin.x86_64", "version": "51.2"}}
+        errors = self.module.verify_gnome_contract(["gnome-shell"], installed, {"gnome-shell": "51"}, set())
+        self.assertEqual(errors, [])
+
+    def test_gnome_contract_flags_wrong_major(self) -> None:
+        installed = {"gnome-shell": {"release": "50.1-1.bfin.x86_64", "version": "50.1"}}
+        errors = self.module.verify_gnome_contract(["gnome-shell"], installed, {"gnome-shell": "51"}, set())
+        self.assertEqual(len(errors), 1)
+        self.assertIn("gnome-shell", errors[0])
+        self.assertIn("51", errors[0])
+
+    def test_gnome_contract_rejects_bare_fedora(self) -> None:
+        """A GNOME package resolving from a bare Fedora release is rejected."""
+        installed = {"gnome-shell": {"release": "51.2-1.fc44.x86_64", "version": "51.2"}}
+        errors = self.module.verify_gnome_contract(["gnome-shell"], installed, {"gnome-shell": "51"}, set())
+        self.assertTrue(any("unapproved Fedora" in e for e in errors))
+
+    def test_gnome_contract_passes_for_hummingbird_identity(self) -> None:
+        installed = {"gnome-shell": {"release": "51.2-1.hum.x86_64", "version": "51.2"}}
+        errors = self.module.verify_gnome_contract(["gnome-shell"], installed, {"gnome-shell": "51"}, set())
+        self.assertEqual(errors, [])
+
+    def test_gnome_contract_requires_factory_rebuild_for_factory_package(self) -> None:
+        installed = {"gnome-shell": {"release": "51.2-1.hum.x86_64", "version": "51.2"}}
+        errors = self.module.verify_gnome_contract(["gnome-shell"], installed, {"gnome-shell": "51"}, {"gnome-shell"})
+        self.assertEqual(len(errors), 1)
+        self.assertIn(".bfin", errors[0])
+
+    def test_gnome_package_absent_from_versions_is_not_version_attested(self) -> None:
+        """A GNOME package not listed in [gnome.versions] is simply not checked."""
+        installed = {"gnome-shell": {"release": "51.2-1.bfin.x86_64", "version": "51.2"}}
+        errors = self.module.verify_gnome_contract(["gnome-shell"], installed, {}, set())
+        self.assertEqual(errors, [])
+
+    def test_parity_origin_passes_for_approved_origin(self) -> None:
+        installed = {"fastfetch": {"release": "1.0-1.hum.x86_64"}}
+        self.assertEqual(self.module.verify_parity_origin(["fastfetch"], installed), [])
+
+    def test_parity_origin_rejects_bare_fedora(self) -> None:
+        installed = {"fastfetch": {"release": "1.0-1.fc44.x86_64"}}
+        errors = self.module.verify_parity_origin(["fastfetch"], installed)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("fastfetch", errors[0])
+
+    def test_parity_origin_passes_when_tagged_hummingbird(self) -> None:
+        installed = {"fastfetch": {"release": "1.0-1.fc44.hum.x86_64"}}
+        self.assertEqual(self.module.verify_parity_origin(["fastfetch"], installed), [])
+
+    def test_normalize_baseurl_strips_trailing_slash_and_lowercases_scheme_and_host(self) -> None:
+        self.assertEqual(
+            self.module.normalize_baseurl("HTTPS://Packages.Redhat.com/A/"),
+            "https://packages.redhat.com/A",
+        )
+
+    def test_normalize_baseurl_normalizes_basearch_token_only(self) -> None:
+        """${basearch} becomes $basearch; the rest of the path is case-sensitive."""
+        self.assertEqual(
+            self.module.normalize_baseurl("https://x/Y/${basearch}/Repo"),
+            "https://x/Y/$basearch/Repo",
+        )
+    def test_repo_pin_errors_flags_unpinned_baseurl(self) -> None:
+        parser = self._parser({"baseurl": "https://a.example.com/$basearch"})
+        errors = self.module.repo_pin_errors(
+            "repo", parser, "fedora.repo", {"repo": ("https://pinned.example.com/$basearch",)})
+        self.assertEqual(len(errors), 1)
+        self.assertIn("unpinned", errors[0])
+
+    def test_repo_pin_errors_flags_metalink(self) -> None:
+        parser = self._parser({"metalink": "https://mirrors.example.com/metalink?f=fedora"})
+        errors = self.module.repo_pin_errors(
+            "repo", parser, "fedora.repo", {"repo": ("https://pinned.example.com/$basearch",)})
+        self.assertIn("metalink", errors[0])
+
+    def test_repo_pin_errors_flags_mirrorlist(self) -> None:
+        parser = self._parser({"mirrorlist": "https://mirrors.example.com/list?f=fedora"})
+        errors = self.module.repo_pin_errors(
+            "repo", parser, "fedora.repo", {"repo": ("https://pinned.example.com/$basearch",)})
+        self.assertIn("mirrorlist", errors[0])
+
+    def test_repo_pin_errors_flags_declared_without_baseurl(self) -> None:
+        """An allowlisted repo id must have a pinned baseurl in the manifest."""
+        parser = self._parser({"baseurl": "https://a.example.com/$basearch"})
+        errors = self.module.repo_pin_errors("repo", parser, "fedora.repo", {})
+        self.assertEqual(len(errors), 1)
+        self.assertIn("no pinned baseurl", errors[0])
+
+    def test_repo_pin_errors_passes_for_matching_pinned_baseurl(self) -> None:
+        parser = self._parser({"baseurl": "https://pinned.example.com/$basearch"})
+        errors = self.module.repo_pin_errors(
+            "repo", parser, "fedora.repo", {"repo": ("https://pinned.example.com/$basearch",)})
+        self.assertEqual(errors, [])
+
+    def test_repo_security_option_errors_flags_proxy(self) -> None:
+        parser = self._parser({"baseurl": "https://a.example.com/$basearch", "proxy": "http://proxy:3128"})
+        errors = self.module.repo_security_option_errors("repo", parser, "fedora.repo")
+        self.assertIn("proxy", errors[0])
+
+    def test_repo_security_option_errors_flags_sslverify_zero(self) -> None:
+        parser = self._parser({"baseurl": "https://a.example.com/$basearch", "sslverify": "0"})
+        errors = self.module.repo_security_option_errors("repo", parser, "fedora.repo")
+        self.assertIn("sslverify", errors[0])
+
+    def test_repo_security_option_errors_passes_when_clean(self) -> None:
+        parser = self._parser({"baseurl": "https://a.example.com/$basearch"})
+        self.assertEqual(self.module.repo_security_option_errors("repo", parser, "fedora.repo"), [])
+
+    def test_check_repo_sections_flags_unapproved_repo(self) -> None:
+        parser = self._parser({"baseurl": "https://a.example.com/$basearch", "enabled": "1"})
+        errors = self.module.check_repo_sections(
+            parser, "fedora.repo", {"public-hummingbird-x86_64-rpms"}, expected_baseurls=None)
+        self.assertIn("Unapproved", errors[0])
+
+    def test_check_repo_sections_allows_approved_repo(self) -> None:
+        parser = self._parser({"baseurl": "https://a.example.com/$basearch", "enabled": "1"})
+        errors = self.module.check_repo_sections(parser, "fedora.repo", {"repo"}, expected_baseurls=None)
+        self.assertEqual(errors, [])
+
+    def test_check_repo_sections_skips_disabled_repo(self) -> None:
+        parser = self._parser({"baseurl": "https://a.example.com/$basearch", "enabled": "0"})
+        errors = self.module.check_repo_sections(parser, "fedora.repo", set(), expected_baseurls=None)
+        self.assertEqual(errors, [])
+
+    def test_check_repo_sections_flags_fedora_repo(self) -> None:
+        parser = self._parser({"baseurl": "https://src.fedoraproject.org/repos/fedora-$basearch", "enabled": "1"})
+        errors = self.module.check_repo_sections(
+            parser, "fedora.repo", {"public-hummingbird-x86_64-rpms"}, expected_baseurls=None)
+        self.assertIn("Fedora", errors[0])
+    def _write_repo(self, directory: Path, repo_id: str, **fields) -> Path:
+        parser = configparser.ConfigParser(interpolation=None)
+        parser[repo_id] = fields
+        path = directory / f"{repo_id}.repo"
+        with path.open("w") as handle:
+            parser.write(handle)
+        return path
+
+    def test_verify_repository_policy_passes_for_clean_allowlist(self) -> None:
+        directory = Path(tempfile.mkdtemp())
+        self._write_repo(
+            directory, "public-hummingbird-x86_64-rpms",
+            baseurl="https://packages.redhat.com/api/pulp-content/public-hummingbird/x86_64/",
+            enabled="1")
+        errors = self.module.verify_repository_policy(
+            directory, {"public-hummingbird-x86_64-rpms"}, check_mode=True,
+            expected_baseurls={"public-hummingbird-x86_64-rpms":
+                               ("https://packages.redhat.com/api/pulp-content/public-hummingbird/x86_64/",)})
+        self.assertEqual(errors, [])
+
+    def test_verify_repository_policy_flags_unpinned_allowlisted_repo(self) -> None:
+        directory = Path(tempfile.mkdtemp())
+        self._write_repo(
+            directory, "public-hummingbird-x86_64-rpms",
+            baseurl="http://unpinned.example.com/$basearch", enabled="1")
+        errors = self.module.verify_repository_policy(
+            directory, {"public-hummingbird-x86_64-rpms"}, check_mode=True,
+            expected_baseurls={"public-hummingbird-x86_64-rpms":
+                               ("https://packages.redhat.com/api/pulp-content/public-hummingbird/x86_64/",)})
+        self.assertTrue(any("pinned" in e for e in errors))
+
+    def test_verify_repository_policy_flags_unapproved_repo(self) -> None:
+        directory = Path(tempfile.mkdtemp())
+        self._write_repo(directory, "third-party", baseurl="https://third-party.example.com/$basearch", enabled="1")
+        errors = self.module.verify_repository_policy(
+            directory, {"public-hummingbird-x86_64-rpms"}, check_mode=True, expected_baseurls=None)
+        self.assertTrue(any("approved" in e for e in errors))
+
+    def test_verify_repository_policy_skips_builder_only_files(self) -> None:
+        """A repo file marked builder-only is not enforced at build time."""
+        directory = Path(tempfile.mkdtemp())
+        path = directory / "fedora-44.repo"
+        path.write_text("# builder-only: true\n[fedora]\nbaseurl=https://a.example.com/$basearch\n")
+        errors = self.module.verify_repository_policy(
+            directory, set(), check_mode=True, expected_baseurls=None)
+        self.assertEqual(errors, [])
+
+    def test_verify_repository_policy_skips_disabled_repos(self) -> None:
+        directory = Path(tempfile.mkdtemp())
+        self._write_repo(directory, "disabled-repo", baseurl="http://x/$basearch", enabled="0")
+        errors = self.module.verify_repository_policy(
+            directory, set(), check_mode=True, expected_baseurls=None)
+        self.assertEqual(errors, [])
+
+    def test_resolve_build_timestamp_reads_source_date_epoch(self) -> None:
+        ts, source = self.module.resolve_build_timestamp({"SOURCE_DATE_EPOCH": "1700000000"})
+        self.assertEqual(source, "SOURCE_DATE_EPOCH")
+        self.assertEqual(ts, "2023-11-14T22:13:20+00:00")
+
+    def test_resolve_build_timestamp_falls_back_when_epoch_unset(self) -> None:
+        ts, source = self.module.resolve_build_timestamp({})
+        self.assertEqual(source, "sentinel-epoch")
+        self.assertEqual(ts, "2004-12-28T13:20:00+00:00")
+
+    def test_generate_provenance_report_writes_json_and_txt(self) -> None:
+        output_dir = Path(tempfile.mkdtemp())
+        installed = {
+            "gnome-shell": {"name": "gnome-shell", "epoch": "0", "version": "51.2",
+                            "release": "1.bfin.x86_64", "arch": "x86_64",
+                            "nevra": "gnome-shell-51.2-1.bfin.x86_64", "origin": "factory"},
+        }
+        sections = {"gnome-shell": "gnome"}
+        with patch.dict(os.environ, {"SOURCE_DATE_EPOCH": "1700000000"}):
+            report = self.module.generate_provenance_report(
+                installed, "main", {"public-hummingbird-x86_64-rpms"}, sections, output_dir=output_dir)
+        self.assertEqual(report["build_provenance"]["flavor"], "main")
+        self.assertEqual(report["build_provenance"]["timestamp"], "2023-11-14T22:13:20+00:00")
+        self.assertEqual(report["build_provenance"]["timestamp_source"], "SOURCE_DATE_EPOCH")
+        self.assertEqual(report["packages"]["gnome-shell"]["origin"], "factory")
+        self.assertEqual(report["packages"]["gnome-shell"]["section"], "gnome")
+        self.assertTrue((output_dir / "package-origins.json").exists())
+        self.assertTrue((output_dir / "package-origins.txt").exists())
 class UsageTests(unittest.TestCase):
     """The manifest argument is required; the verifier must not run without one."""
 
