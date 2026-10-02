@@ -16,6 +16,7 @@ The audit's contract:
 
 import contextlib
 import gzip
+import hashlib
 import importlib.util
 import io
 import json
@@ -24,6 +25,7 @@ import subprocess
 import tempfile
 import textwrap
 import unittest
+import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -110,6 +112,111 @@ class BluefinManifestTests(unittest.TestCase):
             packages = ["coreutils"]
             """)
         self.assertEqual(audit.bluefin_packages(text), {"coreutils"})
+
+    def test_bluefin_packages_picks_up_new_fedora_v_section_without_enumeration(self):
+        # A future [fedora_v45] (or any per-Fedora-version section Bluefin
+        # adds) must be in the union automatically; enumerating versions
+        # in bluefin_packages() makes the audit miss the gap the day
+        # Fedora ships a new release.
+        text = textwrap.dedent("""\
+            [fedora]
+            packages = ["coreutils"]
+            [fedora_v45]
+            packages = ["future-thing"]
+            [fedora_v44]
+            packages = ["evolution"]
+            """)
+        self.assertEqual(
+            audit.bluefin_packages(text),
+            {"coreutils", "future-thing", "evolution"},
+        )
+
+
+class HummingbirdRepomdTests(unittest.TestCase):
+    """The Hummingbird repomd parser must read <checksum>, not <open-checksum>.
+
+    A gzipped primary.xml.gz ships both a <checksum> for the compressed
+    bytes (the ones the script just downloaded) and an <open-checksum>
+    for the uncompressed form. A bare endswith("checksum") match picks up
+    the open-checksum (iteration order) and fails every fetch against the
+    live repository; matching the local XML name is what keeps the gate
+    green.
+    """
+
+    def _fetch(self, repomd_xml: bytes, primary_bytes: bytes):
+        """Drive `fetch_hummingbird_repodata` against mocked network I/O."""
+        from unittest.mock import patch
+
+        def fake_urlopen(url, *args, **kwargs):
+            if url.endswith("repomd.xml"):
+                return io.BytesIO(repomd_xml)
+            if url.endswith("primary.xml.gz"):
+                return io.BytesIO(primary_bytes)
+            raise AssertionError(f"unexpected fetch: {url}")
+
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(audit.urllib.request, "urlopen",
+                             side_effect=fake_urlopen), \
+                patch.object(audit, "HUMMINGBIRD_REPO_FILES",
+                             [Path(tmp) / "hummingbird.repo"]):
+            (Path(tmp) / "hummingbird.repo").write_text(
+                "[public-hummingbird-x86_64-rpms]\n"
+                "baseurl = https://packages.redhat.com/api/pulp-content/public-hummingbird/x86_64/\n"
+            )
+            destination = Path(tmp) / "out"
+            destination.mkdir()
+            return audit.fetch_hummingbird_repodata(destination)
+
+    def test_picks_compressed_checksum_not_open_checksum(self) -> None:
+        """The parser takes <checksum>, not <open-checksum>.
+
+        Both elements are present in the repomd. We construct primary_bytes
+        so that sha256(primary_bytes) matches the <checksum> value we put
+        in the repomd; with the local-name fix the function returns cleanly,
+        with the broken endswith("checksum") match it would have read the
+        <open-checksum> value, computed sha256(primary_bytes), and raised
+        'Hummingbird primary.xml failed checksum'.
+        """
+        primary_bytes = b"compressed-primary-bytes-for-checksum-test"
+        target_digest = hashlib.sha256(primary_bytes).hexdigest()
+        repomd = textwrap.dedent(f"""\
+            <?xml version="1.0" encoding="UTF-8"?>
+            <repomd xmlns="http://linux.duke.edu/metadata/repo">
+              <data type="primary">
+                <location href="repodata/primary.xml.gz"/>
+                <checksum type="sha256">{target_digest}</checksum>
+                <open-checksum type="sha256">feedface00000000000000000000000000000000000000000000000000000000</open-checksum>
+              </data>
+            </repomd>
+            """).encode()
+        baseurl, basename = self._fetch(repomd, primary_bytes)
+        self.assertTrue(basename.endswith("primary.xml.gz"))
+        self.assertIn("packages.redhat.com", baseurl)
+
+    def test_rejects_open_checksum_when_only_open_checksum_matches(self) -> None:
+        """The function fails loud if <checksum> disagrees with the live sha256.
+
+        If the parser were still picking <open-checksum>, the broken branch
+        would have read the live sha256 of `primary_bytes`, found it matched,
+        and silently returned. With the local-name fix the parser takes the
+        zero-digest <checksum>, finds it does NOT match the live sha256,
+        and raises ValueError.
+        """
+        primary_bytes = b"uncompressed-bytes-for-open-checksum"
+        live_sha = hashlib.sha256(primary_bytes).hexdigest()
+        repomd = textwrap.dedent(f"""\
+            <?xml version="1.0" encoding="UTF-8"?>
+            <repomd xmlns="http://linux.duke.edu/metadata/repo">
+              <data type="primary">
+                <location href="repodata/primary.xml.gz"/>
+                <checksum type="sha256">{"0" * 64}</checksum>
+                <open-checksum type="sha256">{live_sha}</open-checksum>
+              </data>
+            </repomd>
+            """).encode()
+        with self.assertRaises(ValueError) as ctx:
+            self._fetch(repomd, primary_bytes)
+        self.assertIn("checksum", str(ctx.exception).lower())
 
 
 class GapTests(unittest.TestCase):

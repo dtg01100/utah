@@ -127,11 +127,17 @@ def bluefin_packages(manifest_text: str) -> set[str]:
     records the same names that are already satisfied under a different
     repository, not additional ones. See docs/skills/package-contract.md
     "multimedia_overrides are not missing packages".
+
+    The set of sections is derived from the manifest rather than enumerated,
+    so a future `[fedora_v45]` (or any per-Fedora-version section Bluefin
+    adds) is picked up automatically; a hardcoded tuple of versions goes
+    stale the day Fedora ships a new release and silently misses the gap.
     """
     data = tomllib.loads(manifest_text)
     names: set[str] = set()
-    for section in ("fedora", "fedora_v42", "fedora_v43", "fedora_v44"):
-        names.update(data.get(section, {}).get("packages", []))
+    for section, body in data.items():
+        if section == "fedora" or section.startswith("fedora_v"):
+            names.update(body.get("packages", []))
     return names
 
 
@@ -232,9 +238,17 @@ def fetch_hummingbird_repodata(destination: Path) -> tuple[str, str]:
     for child in repomd:
         if child.tag.endswith("data") and child.attrib.get("type") == "primary":
             for location in child:
-                if location.tag.endswith("location"):
+                # The local-name suffix match rejects <open-checksum>:
+                # a gzipped primary.xml.gz carries both a <checksum> for
+                # the compressed bytes and an <open-checksum> for the
+                # uncompressed form, and we just downloaded the compressed
+                # bytes. A bare endswith("checksum") match picks up the
+                # open-checksum (which arrives second in iteration order)
+                # and fails every fetch against a gzipped repository.
+                local = location.tag.rsplit("}", 1)[-1]
+                if local == "location":
                     primary_path = location.attrib["href"]
-                if location.tag.endswith("checksum"):
+                elif local == "checksum":
                     primary_checksum = (location.attrib["type"], location.text)
             break
     if not primary_path:
