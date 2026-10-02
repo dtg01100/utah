@@ -133,17 +133,22 @@ install-set check it attests the supply chain the image is composed from
   `[gnome.versions]`, and its release must carry the factory or Hummingbird
   identity (a `.bfin`/`.hum` release tag). A GNOME package resolving to a bare
   Fedora release is rejected: the factory builds GNOME, not the runtime base.
-- **Parity origin** (`verify_parity_origin`) — a Bluefin parity package the
-  factory is expected to supply must resolve from the factory's repository,
-  not silently from another repository. Off-image (`--check`) this is
-  validated statically against the manifest; on-image it checks the resolved
-  release tag.
-- **Repository allowlist** (`verify_repository_policy`) — the composed image
-  may expose only the pinned repositories listed in `[repositories.baseurls]`.
-  Any enabled RPM repository with no allowlist entry, a Fedora baseurl, an
-  unpinned or metalink/mirrorlist baseurl, or a weakening `proxy=`/
-  `sslverify=0` option fails the check. Builder-only repo files (`# builder-only: true`)
-  are skipped, as are repositories that are disabled (`enabled=0`).
+- **Parity origin** (`verify_parity_origin`) — a Bluefin parity package named
+  in `[factory] parity` must carry the factory's `.bfin` release identity, so a
+  package the factory supplies cannot silently resolve from another repository;
+  every other parity package is rejected if it resolves to a bare Fedora
+  release. This runs on-image only, against the releases RPM actually resolved:
+  `--check` has no installed packages to read and does not call it. `--check`
+  does assert that every name in `[factory]`/`[factory] parity` is part of the
+  contract it claims to pin.
+- **Repository allowlist** (`verify_repository_policy`) — the runtime `.repo`
+  files in `packages/` may name only the pinned repositories listed in
+  `[repositories.baseurls]`. Any enabled RPM repository with no allowlist entry,
+  a Fedora baseurl, an unpinned or metalink/mirrorlist baseurl, or a weakening
+  `proxy=`/`sslverify=0` option fails the check. Builder-only repo files
+  (`# builder-only: true`) are skipped, as are repositories that are disabled
+  (`enabled=0`). This runs under `--check` against the repo files composed into
+  the image; it does not scan the built image's `/etc/yum.repos.d`.
 - **Build provenance** (`generate_provenance_report`) — the resolved
   package-origin/NEVRA data is written as JSON plus a human-readable report to
   `$UTAH_REPORT_DIR` (default `/usr/share/utah`), retaining the image flavor,
