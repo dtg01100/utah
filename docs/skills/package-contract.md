@@ -12,9 +12,9 @@ status: active
 dependencies: []
 tags: [packages, parity, bluefin, contracts]
 description: >-
-  Bluefin parity contract: verbatim bluefin.toml, utah.toml overlay, device
-  firmware, [unavailable] rules, repository policy. Use when adding, removing,
-  or debugging packages or parity/check-repos failures.
+  Bluefin parity contract (verbatim bluefin.toml), utah.toml overlay, device
+  firmware, [unavailable] rules, repository policy, and supply-chain
+  attestation. Add, remove, or debug packages or parity/check-repo failures.
 metadata:
   type: policy
 ---
@@ -38,7 +38,11 @@ policy for changing them.
   addition to* or *instead of* the contract lives here. The full rules are in
   the header comment of that file (cite it; do not move or copy it):
 
-  - `[gnome]` — GNOME 51 desktop contract Hummingbird does not ship.
+  - `[gnome]` — GNOME desktop contract Hummingbird does not ship. Each entry
+    is also a **version + release-identity assertion**: the resolved package
+    must match the major declared in `[gnome.versions]` and carry a factory or
+    Hummingbird release tag (`verify_gnome_contract`), so a GNOME package that
+    silently resolves to a bare Fedora release fails the contract.
   - `[build]` — toolchain needed to build the pinned GNOME extensions
     (`scripts/build-gnome-extensions.sh`).
   - `[parity]` — what Bluefin inherits from Fedora's base image and Hummingbird
@@ -117,6 +121,34 @@ and never copied into a layer: a COPY of the whole ~4 GB repository would leave
 a permanent layer behind, so reproducibility now comes from the digest-pinned
 `packages` stage being the only source the package transaction can see rather
 than from the repository contents living in the image.
+
+## Supply-chain attestation
+
+`verify-rpm-contract.py` asserts more than package-name presence. Beyond the
+install-set check it attests the supply chain the image is composed from
+(issue #21):
+
+- **GNOME version and release identity** (`verify_gnome_contract`) — every
+  package in `[gnome]` must resolve to the major version declared in
+  `[gnome.versions]`, and its release must carry the factory or Hummingbird
+  identity (a `.bfin`/`.hum` release tag). A GNOME package resolving to a bare
+  Fedora release is rejected: the factory builds GNOME, not the runtime base.
+- **Parity origin** (`verify_parity_origin`) — a Bluefin parity package the
+  factory is expected to supply must resolve from the factory's repository,
+  not silently from another repository. Off-image (`--check`) this is
+  validated statically against the manifest; on-image it checks the resolved
+  release tag.
+- **Repository allowlist** (`verify_repository_policy`) — the composed image
+  may expose only the pinned repositories listed in `[repositories.baseurls]`.
+  Any enabled RPM repository with no allowlist entry, a Fedora baseurl, an
+  unpinned or metalink/mirrorlist baseurl, or a weakening `proxy=`/
+  `sslverify=0` option fails the check. Builder-only repo files (`# builder-only: true`)
+  are skipped, as are repositories that are disabled (`enabled=0`).
+- **Build provenance** (`generate_provenance_report`) — the resolved
+  package-origin/NEVRA data is written as JSON plus a human-readable report to
+  `$UTAH_REPORT_DIR` (default `/usr/share/utah`), retaining the image flavor,
+  build timestamp (from `SOURCE_DATE_EPOCH` or the sentinel epoch), per-package
+  origin and section, and the allowed-repository list.
 
 ## Supply-chain download verification
 
