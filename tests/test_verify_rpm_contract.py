@@ -706,7 +706,15 @@ class SupplyChainTests(unittest.TestCase):
         """A GNOME package resolving from a bare Fedora release is rejected."""
         installed = {"gnome-shell": {"release": "51.2-1.fc44.x86_64", "version": "51.2"}}
         errors = self.module.verify_gnome_contract(["gnome-shell"], installed, {"gnome-shell": "51"}, set())
-        self.assertTrue(any("unapproved Fedora" in e for e in errors))
+        self.assertEqual(len(errors), 1, f"one defect must report one error: {errors}")
+        self.assertIn("unapproved Fedora", errors[0])
+
+    def test_gnome_contract_reports_unidentified_release_once(self) -> None:
+        """A release with no identity at all is reported once, generally."""
+        installed = {"gnome-shell": {"release": "51.2-1.x86_64", "version": "51.2"}}
+        errors = self.module.verify_gnome_contract(["gnome-shell"], installed, {"gnome-shell": "51"}, set())
+        self.assertEqual(len(errors), 1)
+        self.assertIn("unapproved release", errors[0])
 
     def test_gnome_contract_passes_for_hummingbird_identity(self) -> None:
         installed = {"gnome-shell": {"release": "51.2-1.hum.x86_64", "version": "51.2"}}
@@ -738,6 +746,41 @@ class SupplyChainTests(unittest.TestCase):
     def test_parity_origin_passes_when_tagged_hummingbird(self) -> None:
         installed = {"fastfetch": {"release": "1.0-1.fc44.hum.x86_64"}}
         self.assertEqual(self.module.verify_parity_origin(["fastfetch"], installed), [])
+
+    def test_factory_parity_package_must_carry_factory_identity(self) -> None:
+        """A factory-supplied parity package resolving from Hummingbird fails."""
+        installed = {"fprintd": {"release": "1.94.5-1.hum1.x86_64"}}
+        errors = self.module.verify_parity_origin(["fprintd"], installed, {"fprintd"})
+        self.assertEqual(len(errors), 1)
+        self.assertIn("fprintd", errors[0])
+        self.assertIn(".bfin", errors[0])
+
+    def test_factory_parity_package_passes_on_factory_release(self) -> None:
+        installed = {"fprintd": {"release": "1.94.5-1.hum1.bfin.x86_64"}}
+        self.assertEqual(
+            self.module.verify_parity_origin(["fprintd"], installed, {"fprintd"}), []
+        )
+
+    def test_factory_parity_rule_does_not_leak_to_other_parity_packages(self) -> None:
+        installed = {"fastfetch": {"release": "1.0-1.hum1.x86_64"}}
+        self.assertEqual(
+            self.module.verify_parity_origin(["fastfetch"], installed, {"fprintd"}), []
+        )
+
+    def test_shipped_factory_parity_names_are_declared_parity_packages(self) -> None:
+        """Every [factory] parity name must be a package the contract installs."""
+        overlay = ROOT / "packages" / "utah.toml"
+        parity = set(self.module.section(overlay, "parity"))
+        factory_parity = self.module.section(overlay, "factory", "parity")
+        self.assertTrue(factory_parity, "the shipped overlay declares no factory parity packages")
+        self.assertEqual([p for p in factory_parity if p not in parity], [])
+
+    def test_shipped_gnome_versions_cover_the_gnome_release_packages(self) -> None:
+        """nautilus and gnome-initial-setup track GNOME, so they are asserted too."""
+        overlay = ROOT / "packages" / "utah.toml"
+        versions = tomllib.loads(overlay.read_text())["gnome"]["versions"]
+        for pkg in ("nautilus", "gnome-initial-setup"):
+            self.assertEqual(versions.get(pkg), "51", f"{pkg} is not version-asserted")
 
     def test_normalize_baseurl_strips_trailing_slash_and_lowercases_scheme_and_host(self) -> None:
         self.assertEqual(

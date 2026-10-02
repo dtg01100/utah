@@ -34,17 +34,16 @@ DEFAULT_BUILD_EPOCH = 1104240000  # 2004-12-28T13:20:00Z sentinel
 DISABLED_VALUES: frozenset[str] = frozenset({"0", "false", "no", "off"})
 
 
-def load_contract(manifest: Path) -> list[str]:
-    """The list of package names this image must contain, in manifest order."""
-    return list(tomllib.loads(manifest.read_text(encoding="utf-8")).keys())
+def section(overlay: Path, name: str, key: str = "packages") -> list[str]:
+    """A named package list from an overlay manifest, in the order written.
 
-
-def section(overlay: Path, name: str) -> list[str]:
-    """A named package list from an overlay manifest, in the order written."""
+    `key` selects which list in the section to read, so a section can declare
+    more than one bucket of names ([factory] declares `packages` and `parity`).
+    """
     data = tomllib.loads(overlay.read_text(encoding="utf-8"))
-    if name not in data or "packages" not in data[name]:
+    if name not in data or key not in data[name]:
         return []
-    return list(data[name]["packages"])
+    return list(data[name][key])
 
 
 def is_installed(package: str) -> bool:
@@ -162,33 +161,51 @@ def verify_gnome_contract(
                         "release identity (.bfin)"
                     )
             elif ".bfin" not in rel and ".hum" not in rel:
-                errors.append(
-                    f"GNOME package '{pkg}' resolved from unapproved release '{rel}' "
-                    "(expected Hummingbird `.hum` or factory `.bfin`)"
-                )
-            if ".fc" in rel and ".hum" not in rel and ".bfin" not in rel:
-                errors.append(
-                    f"GNOME package '{pkg}' resolved from unapproved Fedora release '{rel}'"
-                )
+                # One defect, one error: a bare Fedora release is named as such,
+                # anything else unidentified gets the general message.
+                if ".fc" in rel:
+                    errors.append(
+                        f"GNOME package '{pkg}' resolved from unapproved Fedora release '{rel}'"
+                    )
+                else:
+                    errors.append(
+                        f"GNOME package '{pkg}' resolved from unapproved release '{rel}' "
+                        "(expected Hummingbird `.hum` or factory `.bfin`)"
+                    )
     return errors
 
 
 def verify_parity_origin(
     parity_packages: list[str],
     installed: dict[str, dict[str, Any]],
+    factory_parity: set[str] | None = None,
 ) -> list[str]:
     """Assert parity packages cannot silently resolve from another repository.
 
-    Parity packages are inherited from Hummingbird's repository. A `.fc` release
-    without the `.hum` Hummingbird tag means DNF pulled it from the base image's
-    Fedora repository instead of the pinned Hummingbird one.
+    Most parity packages are inherited from Hummingbird's repository. A `.fc`
+    release without the `.hum` Hummingbird tag means DNF pulled it from the base
+    image's Fedora repository instead of the pinned Hummingbird one.
+
+    `[factory] parity` in packages/utah.toml names the parity packages the
+    factory itself supplies. Those are held to the stronger rule: the factory
+    publishes them as `.hum<N>.bfin`, which outranks Hummingbird's `.hum<N>`, so
+    a copy without `.bfin` means the transaction resolved somewhere other than
+    the factory repository -- the silent substitution issue #21 forbids.
     """
+    factory_parity = factory_parity or set()
     errors: list[str] = []
     for pkg in parity_packages:
         if pkg not in installed:
             continue
         for info in installs_of(installed[pkg]):
             rel = info["release"]
+            if pkg in factory_parity:
+                if ".bfin" not in rel:
+                    errors.append(
+                        f"Parity package '{pkg}' is supplied by the factory but resolved "
+                        f"from release '{rel}', which lacks the factory identity (.bfin)"
+                    )
+                continue
             if ".fc" in rel and ".hum" not in rel and ".bfin" not in rel:
                 errors.append(
                     f"Parity package '{pkg}' resolved from unapproved Fedora release '{rel}'"
@@ -541,10 +558,8 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
-    try:
-        factory_packages = set(section(overlay, "factory"))
-    except ValueError:
-        factory_packages = set()
+    factory_packages = set(section(overlay, "factory"))
+    factory_parity = set(section(overlay, "factory", "parity"))
 
     package_sections: dict[str, str] = {}
     for p in bluefin:
@@ -570,6 +585,10 @@ def main() -> int:
         assert len(set(expected)) == len(expected), "RPM contract contains duplicate package names"
         for pkg in factory_packages:
             assert pkg in expected, f"Factory package '{pkg}' not in expected contract packages"
+        for pkg in factory_parity:
+            assert pkg in parity, (
+                f"Factory parity package '{pkg}' is not declared in the [parity] section"
+            )
         repo_errors = verify_repository_policy(
             args.manifest.parent, allowed_repos,
             expected_baseurls=repo_baseurls, check_mode=True,
@@ -578,7 +597,10 @@ def main() -> int:
             for err in repo_errors:
                 print(f"ERROR: {err}", file=sys.stderr)
             return 1
-        print("RPM contract and repository policy syntax valid.")
+        print(
+            "RPM contract valid; repository policy holds for the runtime .repo files in "
+            f"{args.manifest.parent}."
+        )
         return 0
 
     missing = [pkg for pkg in expected if not is_installed(pkg)]
@@ -605,7 +627,7 @@ def main() -> int:
     attestation_errors.extend(
         verify_gnome_contract(gnome, installed, major_versions, factory_packages)
     )
-    attestation_errors.extend(verify_parity_origin(parity, installed))
+    attestation_errors.extend(verify_parity_origin(parity, installed, factory_parity))
 
     if attestation_errors:
         print(
@@ -631,7 +653,7 @@ def main() -> int:
             return 1
     print(
         f"All {len(expected)} contract packages verified (GNOME versions, factory rebuilds, "
-        "repository policy)."
+        "parity origin)."
     )
     if report is None:
         print("Skipped provenance report retention (--no-report).")
