@@ -34,6 +34,7 @@ SCRIPT = ROOT / "scripts" / "verify-rpm-contract.py"
 # The path the script consults before falling back to the manifest. Tests that
 # exercise that branch redirect it into a temporary directory.
 RESOLVED_CONTRACT = "/usr/share/utah/contract.txt"
+RUNTIME_REPOS_DIR = "/etc/yum.repos.d"
 
 
 def load_module():
@@ -52,6 +53,20 @@ def toml_section(name: str, packages: list[str]) -> str:
 def write_manifest(directory: Path, fedora: list[str]) -> Path:
     path = directory / "bluefin.toml"
     path.write_text(toml_section("fedora", fedora))
+    return path
+
+
+def write_repo_file(directory: Path, repo_id: str, **fields) -> Path:
+    """Write a single .repo file with one section, like Fedora's repos.
+
+    `directory` is created if it does not exist. `enabled` defaults to "1".
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    parser = configparser.ConfigParser(interpolation=None)
+    parser[repo_id] = {"enabled": "1", **fields}
+    path = directory / f"{repo_id}.repo"
+    with path.open("w") as handle:
+        parser.write(handle)
     return path
 
 
@@ -260,7 +275,8 @@ class VerifyModeTests(unittest.TestCase):
                  flavor: str = "main", releases: dict[str, str] | None = None,
                  multilib: set[str] | None = None,
                  extra_argv: list[str] | None = None,
-                 report_dir: Path | None = None) -> tuple[int, str]:
+                 report_dir: Path | None = None,
+                 runtime_repos_dir: Path | None = None) -> tuple[int, str]:
         argv = ["verify-rpm-contract.py", *(extra_argv or []), str(manifest), str(overlay)]
         stdout = io.StringIO()
         overlay_data = tomllib.loads(overlay.read_text())
@@ -294,9 +310,13 @@ class VerifyModeTests(unittest.TestCase):
             return result, []
 
         report_dir = report_dir or Path(tempfile.mkdtemp())
+        runtime_repos = runtime_repos_dir if runtime_repos_dir is not None else Path(
+            tempfile.mkdtemp()
+        )
         with patch.object(self.module, "is_installed",
                           side_effect=lambda p: p in installed), \
                 patch.object(self.module, "query_packages", side_effect=fake_query), \
+                patch.object(self.module, "RUNTIME_REPOS_DIR", runtime_repos), \
                 patch.object(sys, "argv", argv), \
                 patch.dict(os.environ, {"IMAGE_FLAVOR": flavor, "UTAH_REPORT_DIR": str(report_dir)}), \
                 redirect_stdout(stdout):
@@ -449,7 +469,12 @@ class ResolvedContractTests(unittest.TestCase):
                 return result, []
 
             report_dir = Path(tempfile.mkdtemp())
+            # /etc/yum.repos.d is real on Fedora hosts. The resolved contract
+            # tests don't care about it, so redirect it to a guaranteed-empty
+            # temp directory (#454 on-image scan).
+            runtime_repos = Path(tempfile.mkdtemp())
             with patch.object(self.module, "Path", redirected), \
+                    patch.object(self.module, "RUNTIME_REPOS_DIR", runtime_repos), \
                     patch.object(self.module, "is_installed",
                                  side_effect=lambda p: p in installed), \
                     patch.object(self.module, "query_packages", side_effect=fake_query), \
@@ -1074,6 +1099,191 @@ class SupplyChainTests(unittest.TestCase):
         text = (output_dir / "package-origins.txt").read_text()
         self.assertIn("mesa-dri-drivers-25.1-1.hum.x86_64", text)
         self.assertIn("mesa-dri-drivers-25.1-1.hum.i686", text)
+
+
+class OnImageRepoAllowlistTests(unittest.TestCase):
+    """The on-image run scans the composed image's /etc/yum.repos.d (#454).
+
+    `--check` already enforces the repository allowlist against the source
+    repo files in `packages/`. The Hummingbird base image ships its own repo
+    files; without an on-image scan those pass into the runtime unattested.
+    These tests cover the scan wired into main()'s verify-mode path: a clean
+    runtime repo set passes, an enabled Fedora or unapproved repo fails, a
+    disabled repo is skipped, and a Hummingbird-shipped file with the right
+    section id still passes.
+    """
+
+    def setUp(self) -> None:
+        self.module = load_module()
+
+    def run_main(self, manifest: Path, overlay: Path, installed: set[str],
+                 runtime_repos_dir: Path, flavor: str = "main") -> tuple[int, str, str]:
+        argv = ["verify-rpm-contract.py", str(manifest), str(overlay)]
+        stdout, stderr = io.StringIO(), io.StringIO()
+        overlay_data = tomllib.loads(overlay.read_text())
+        gnome_versions = overlay_data.get("gnome", {}).get("versions", {})
+        factory = set(overlay_data.get("factory", {}).get("packages", []))
+
+        def fake_query(packages):
+            result = {}
+            for pkg in packages:
+                if pkg not in installed:
+                    continue
+                major = gnome_versions.get(pkg, "1")
+                release = "1.bfin.x86_64" if pkg in factory else "1.hum.x86_64"
+                version = f"{major}.0"
+                result[pkg] = {
+                    "name": pkg, "epoch": "0", "version": version,
+                    "release": release, "arch": "x86_64",
+                    "nevra": f"{pkg}-{version}-{release}",
+                    "origin": "factory" if pkg in factory else "hummingbird",
+                }
+            return result, []
+
+        report_dir = Path(tempfile.mkdtemp())
+        with patch.object(self.module, "is_installed",
+                          side_effect=lambda p: p in installed), \
+                patch.object(self.module, "query_packages", side_effect=fake_query), \
+                patch.object(self.module, "RUNTIME_REPOS_DIR", runtime_repos_dir), \
+                patch.object(sys, "argv", argv), \
+                patch.dict(os.environ, {"IMAGE_FLAVOR": flavor, "UTAH_REPORT_DIR": str(report_dir)}), \
+                patch.object(sys, "stderr", stderr), \
+                redirect_stdout(stdout):
+            code = self.module.main()
+        return code, stdout.getvalue(), stderr.getvalue()
+
+    def test_a_clean_runtime_repo_set_passes(self) -> None:
+        """The runtime /etc/yum.repos.d only contains the allowlisted repos."""
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            manifest = write_manifest(directory, ["bash"])
+            overlay = write_overlay(
+                directory,
+                gnome=["gnome-shell"],
+                repositories=[
+                    "public-hummingbird-x86_64-rpms",
+                    "utah-packages",
+                    "nvidia-container-toolkit",
+                ],
+                baseurls={
+                    "public-hummingbird-x86_64-rpms":
+                        "https://packages.redhat.com/api/pulp-content/public-hummingbird/x86_64/",
+                    "utah-packages": "file:///etc/utah-packages",
+                    "nvidia-container-toolkit":
+                        "https://nvidia.github.io/libnvidia-container/stable/rpm/$basearch",
+                },
+            )
+            runtime_repos = directory / "runtime-yum-repos"
+            write_repo_file(
+                runtime_repos, "public-hummingbird-x86_64-rpms",
+                baseurl="https://packages.redhat.com/api/pulp-content/public-hummingbird/x86_64/",
+            )
+            write_repo_file(
+                runtime_repos, "utah-packages",
+                baseurl="file:///etc/utah-packages",
+            )
+            write_repo_file(
+                runtime_repos, "nvidia-container-toolkit",
+                baseurl="https://nvidia.github.io/libnvidia-container/stable/rpm/$basearch",
+                enabled="0",
+            )
+            code, out, err = self.run_main(
+                manifest, overlay, {"bash", "gnome-shell"}, runtime_repos
+            )
+        self.assertEqual(code, 0, err)
+        self.assertIn("All 2 contract packages are present.", out)
+
+    def test_an_enabled_fedora_repo_in_the_image_fails(self) -> None:
+        """A Hummingbird-shipped Fedora repo file fails the on-image run."""
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            manifest = write_manifest(directory, ["bash"])
+            overlay = write_overlay(directory, gnome=["gnome-shell"])
+            runtime_repos = directory / "runtime-yum-repos"
+            write_repo_file(
+                runtime_repos, "public-hummingbird-x86_64-rpms",
+                baseurl="https://packages.redhat.com/api/pulp-content/public-hummingbird/x86_64/",
+            )
+            write_repo_file(
+                runtime_repos, "fedora-rawhide",
+                baseurl="https://dl.fedoraproject.org/pub/fedora/linux/development/rawhide/$basearch/os/",
+            )
+            code, _, err = self.run_main(
+                manifest, overlay, {"bash", "gnome-shell"}, runtime_repos
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("Fedora repository 'fedora-rawhide' is enabled", err)
+        self.assertIn("fedora-rawhide.repo", err)
+
+    def test_an_unapproved_repo_in_the_image_fails(self) -> None:
+        """A Hummingbird-shipped repo id not on the allowlist fails."""
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            manifest = write_manifest(directory, ["bash"])
+            overlay = write_overlay(directory, gnome=["gnome-shell"])
+            runtime_repos = directory / "runtime-yum-repos"
+            write_repo_file(
+                runtime_repos, "public-hummingbird-x86_64-rpms",
+                baseurl="https://packages.redhat.com/api/pulp-content/public-hummingbird/x86_64/",
+            )
+            write_repo_file(
+                runtime_repos, "third-party",
+                baseurl="https://third-party.example.com/$basearch",
+            )
+            code, _, err = self.run_main(
+                manifest, overlay, {"bash", "gnome-shell"}, runtime_repos
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("Unapproved repository 'third-party' is enabled", err)
+
+    def test_a_disabled_repo_is_skipped(self) -> None:
+        """An allowlisted repo with enabled=0 contributes no error."""
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            manifest = write_manifest(directory, ["bash"])
+            overlay = write_overlay(directory, gnome=["gnome-shell"])
+            runtime_repos = directory / "runtime-yum-repos"
+            write_repo_file(
+                runtime_repos, "public-hummingbird-x86_64-rpms",
+                baseurl="https://packages.redhat.com/api/pulp-content/public-hummingbird/x86_64/",
+                enabled="0",
+            )
+            code, _, err = self.run_main(
+                manifest, overlay, {"bash", "gnome-shell"}, runtime_repos
+            )
+        self.assertEqual(code, 0, err)
+
+    def test_an_empty_runtime_repo_dir_passes(self) -> None:
+        """A real Fedora host's /etc/yum.repos.d might not be readable here."""
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            manifest = write_manifest(directory, ["bash"])
+            overlay = write_overlay(directory, gnome=["gnome-shell"])
+            runtime_repos = directory / "runtime-yum-repos-empty"
+            runtime_repos.mkdir()
+            code, _, err = self.run_main(
+                manifest, overlay, {"bash", "gnome-shell"}, runtime_repos
+            )
+        self.assertEqual(code, 0, err)
+
+    def test_an_unpinned_baseurl_in_an_allowlisted_repo_fails(self) -> None:
+        """A Hummingbird repo file with a different baseurl fails the pin check."""
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            manifest = write_manifest(directory, ["bash"])
+            overlay = write_overlay(directory, gnome=["gnome-shell"])
+            runtime_repos = directory / "runtime-yum-repos"
+            write_repo_file(
+                runtime_repos, "public-hummingbird-x86_64-rpms",
+                baseurl="https://mirror.example.com/hummingbird/$basearch/",
+            )
+            code, _, err = self.run_main(
+                manifest, overlay, {"bash", "gnome-shell"}, runtime_repos
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("unpinned baseurl", err)
+
+
 class UsageTests(unittest.TestCase):
     """The manifest argument is required; the verifier must not run without one."""
 

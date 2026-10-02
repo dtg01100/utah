@@ -13,8 +13,9 @@ dependencies: []
 tags: [packages, parity, bluefin, contracts]
 description: >-
   Bluefin parity contract (verbatim bluefin.toml), utah.toml overlay, device
-  firmware, [unavailable] rules, repository policy, and supply-chain
-  attestation. Add, remove, or debug packages or parity/check-repo failures.
+  firmware, [unavailable] rules, repository policy (on-image /etc/yum.repos.d
+  scan), and supply-chain attestation. Add, remove, or debug packages or
+  parity/check-repo failures.
 metadata:
   type: policy
 ---
@@ -147,8 +148,12 @@ install-set check it attests the supply chain the image is composed from
   a Fedora baseurl, an unpinned or metalink/mirrorlist baseurl, or a weakening
   `proxy=`/`sslverify=0` option fails the check. Builder-only repo files
   (`# builder-only: true`) are skipped, as are repositories that are disabled
-  (`enabled=0`). This runs under `--check` against the repo files composed into
-  the image; it does not scan the built image's `/etc/yum.repos.d`.
+  (`enabled=0`). `--check` scans `packages/*.repo`; the on-image run additionally
+  scans the composed image's `/etc/yum.repos.d` so repository files shipped by
+  the Hummingbird base image are subject to the same allowlist (#454). The
+  runtime scan uses `check_mode=False` because the v4l2loopback stage's
+  builder-only repo files are never copied into the runtime layer (Containerfile,
+  v4l2loopback stage).
 - **Build provenance** (`generate_provenance_report`) — the resolved
   package-origin/NEVRA data is written as JSON plus a human-readable report to
   `$UTAH_REPORT_DIR` (default `/usr/share/utah`), retaining the image flavor,

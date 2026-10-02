@@ -122,7 +122,7 @@
         "bluefin",
         "contracts"
       ],
-      "description": "Bluefin parity contract (verbatim bluefin.toml), utah.toml overlay, device firmware, [unavailable] rules, repository policy, and supply-chain attestation. Add, remove, or debug packages or parity/check-repo failures.",
+      "description": "Bluefin parity contract (verbatim bluefin.toml), utah.toml overlay, device firmware, [unavailable] rules, repository policy (on-image /etc/yum.repos.d scan), and supply-chain attestation. Add, remove, or debug packages or parity/check-repo failures.",
       "version": "1.0",
       "last_updated": "2026-10-01",
       "doc_type": "policy"
