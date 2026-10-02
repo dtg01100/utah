@@ -347,6 +347,13 @@ option parsing — and the remaining positionals are forwarded verbatim,
 so an empty `IMAGE_NAME` keeps its slot instead of promoting
 `IMAGE_TAG` into it.
 
+On a stale image where the shim is missing, the override logs a warning and
+falls back to Common's `/usr/libexec/ublue-image-repo` so `ujust report`
+still submits somewhere instead of crashing with "No such file or directory"
+(#487). The bug will then land in `projectbluefin/common` until the user
+updates; the warning names the fallback and the tracking issue so the user
+knows what to expect.
+
 Two deliberate differences from Common's `report` recipe: the override sets
 `BONEDIGGER_BRAND="🐦 Utah Bug Report"` so the prompt names Utah rather than
 Bluefin, and it does not forward Common's `BONEDIGGER_VERSION` because

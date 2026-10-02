@@ -265,6 +265,13 @@ class UjustOverridesTests(unittest.TestCase):
         # handling on just >= 1.56; the staged default.just defines a
         # competing `report: exit 99` so an override that lost duplicate
         # resolution fails loudly instead of passing trivially.
+        #
+        # The recipe branches on whether /usr/local/libexec/utah-image-repo
+        # is executable, so the happy-path test stages a stub at the same
+        # absolute path the recipe checks (the fallback test removes it).
+        shim_stub = self.root / "usr-local-libexec-utah-image-repo"
+        shim_stub.write_text("#!/usr/bin/bash\necho 'shim $@'\n")
+        shim_stub.chmod(0o755)
         bonedigger_stub = self.root / "usr-libexec-bonedigger-report"
         bonedigger_stub.write_text(
             "#!/usr/bin/bash\n"
@@ -272,15 +279,16 @@ class UjustOverridesTests(unittest.TestCase):
             'echo "${UBLUE_IMAGE_REPO_BIN:-unset}" >> "$CALLS"\n'
         )
         bonedigger_stub.chmod(0o755)
-        # Rewrite the entry's resolved recipe text so the absolute
-        # `/usr/libexec/bonedigger-report` calls the stub instead. The
-        # rewrite lives in a tmp copy that the entry justfile imports; the
+        # Rewrite the entry's resolved recipe text so the absolute paths
+        # the recipe references resolve to the tmp-dir stubs. The rewrite
+        # lives in a tmp copy that the entry justfile imports; the
         # original recipe source on disk is untouched.
         original_recipe = RECIPES.read_text()
         patched_recipes = self.root / "60-custom.just"
-        patched_recipes.write_text(original_recipe.replace(
-            "/usr/libexec/bonedigger-report", str(bonedigger_stub)
-        ))
+        patched_recipes.write_text(original_recipe
+            .replace("/usr/libexec/bonedigger-report", str(bonedigger_stub))
+            .replace("/usr/local/libexec/utah-image-repo", str(shim_stub))
+        )
         # Replace the entry's import of the live recipe with the patched copy
         # so `just` resolves the stubbed path.
         entry_text = self.entry.read_text()
@@ -302,17 +310,23 @@ class UjustOverridesTests(unittest.TestCase):
         # for bonedigger-report at runtime, not the default from common.
         self.assertTrue(calls.startswith("bonedigger \n"),
                         f"bonedigger stub did not run; calls={calls!r}")
-        self.assertIn("/usr/local/libexec/utah-image-repo", calls,
+        self.assertIn(str(shim_stub), calls,
                       "ujust report must set UBLUE_IMAGE_REPO_BIN to the Utah shim")
         self.assertNotIn("unset", calls,
                           "UBLUE_IMAGE_REPO_BIN must be set by the recipe, "
                           "not left to fall back to common's ublue-image-repo")
+        self.assertNotIn("/usr/libexec/ublue-image-repo", calls,
+                         "ujust report must not fall back to common's "
+                         "ublue-image-repo when the shim is present")
         # Static guard: the shipped recipe text must also reference the shim
         # path directly, so a future contributor who removes the export
-        # breaks the test before the merge claim.
+        # breaks the test before the merge claim. The recipe body is a bash
+        # script (it has to be, to branch on the shim's existence), so
+        # match it from the `#!/usr/bin/bash` shebang to the next blank
+        # line / recipe boundary.
         match = re.search(
             r"report \*args:\s*\n"
-            r"(?P<body>(?:[ \t].*\n|\s*\\\s*\n)+)",
+            r"(?P<body>(?:[ \t].*\n)+)",
             original_recipe,
         )
         self.assertIsNotNone(
@@ -321,15 +335,71 @@ class UjustOverridesTests(unittest.TestCase):
         )
         body = match.group("body")
         self.assertIn(
-            'UBLUE_IMAGE_REPO_BIN="/usr/local/libexec/utah-image-repo"',
+            '/usr/local/libexec/utah-image-repo',
             body,
-            "ujust report must set UBLUE_IMAGE_REPO_BIN to the Utah shim",
+            "ujust report must reference the Utah shim path",
         )
         self.assertIn(
             "/usr/libexec/bonedigger-report",
             body,
             "ujust report must still call bonedigger-report",
         )
+        self.assertIn(
+            'BONEDIGGER_BRAND="🐦 Utah Bug Report"',
+            body,
+            "ujust report must set BONEDIGGER_BRAND to rebrand the prompt",
+        )
+
+    def test_report_override_falls_back_to_common_when_shim_is_missing(self):
+        # projectbluefin/utah#487: on a stale image where the
+        # /usr/local/libexec/utah-image-repo shim is missing (e.g. the image
+        # was built before #448 landed) `ujust report` crashed with
+        # "No such file or directory". The recipe must detect the missing
+        # shim, log a warning, and fall back to common's
+        # /usr/libexec/ublue-image-repo so the report still goes somewhere
+        # instead of refusing to run.
+        bonedigger_stub = self.root / "usr-libexec-bonedigger-report"
+        bonedigger_stub.write_text(
+            "#!/usr/bin/bash\n"
+            'echo "bonedigger $*" >> "$CALLS"\n'
+            'echo "${UBLUE_IMAGE_REPO_BIN:-unset}" >> "$CALLS"\n'
+        )
+        bonedigger_stub.chmod(0o755)
+        # Rewrite the entry's resolved recipe text so the absolute
+        # `/usr/libexec/bonedigger-report` calls the stub instead, and the
+        # absolute `/usr/local/libexec/utah-image-repo` check points at a
+        # path that does not exist (the default), simulating a stale image.
+        original_recipe = RECIPES.read_text()
+        patched_recipes = self.root / "60-custom.just"
+        patched_recipes.write_text(original_recipe.replace(
+            "/usr/libexec/bonedigger-report", str(bonedigger_stub)
+        ))
+        entry_text = self.entry.read_text()
+        self.entry.write_text(entry_text.replace(str(RECIPES), str(patched_recipes)))
+
+        env = dict(self.env)
+        env.pop("UBLUE_IMAGE_REPO_BIN", None)
+        result = subprocess.run([self.just, "--justfile", str(self.entry), "report"],
+                                env=env, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0,
+                         f"ujust report must not crash when the shim is "
+                         f"missing; stderr={result.stderr!r}")
+        calls = self.calls()
+        self.assertTrue(calls.startswith("bonedigger \n"),
+                        f"bonedigger stub did not run; calls={calls!r}")
+        # The fallback path is the common resolver, NOT the missing shim.
+        # The stub writes the UBLUE_IMAGE_REPO_BIN it received, so this
+        # proves the recipe branched correctly when the shim was absent.
+        self.assertIn("/usr/libexec/ublue-image-repo", calls,
+                      "ujust report must fall back to common's "
+                      "ublue-image-repo when the shim is missing")
+        self.assertNotIn("/usr/local/libexec/utah-image-repo\n", calls,
+                         "ujust report must not point at the missing shim")
+        # The user must be warned: a silent fallback would let the bug be
+        # filed in the wrong repo without explanation.
+        self.assertIn("WARN", result.stderr)
+        self.assertIn("/usr/local/libexec/utah-image-repo", result.stderr)
+        self.assertIn("projectbluefin/utah#487", result.stderr)
 
 if __name__ == "__main__":
     unittest.main()

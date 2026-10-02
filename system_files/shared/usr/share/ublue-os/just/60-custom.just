@@ -81,12 +81,26 @@ enroll-secure-boot-key:
 # BONEDIGGER_VERSION is intentionally not forwarded because
 # bonedigger-report never reads it and the variable is not in scope here.
 #
+# On a stale image where the shim is missing the recipe must not crash with
+# "No such file or directory" -- that is the bug filed as #487. Fall back to
+# common's resolver so the report still goes somewhere instead of refusing to
+# submit (#487). The user is warned so they know to file in projectbluefin/common
+# until they update, not projectbluefin/utah.
+#
 # Keep the blank line above: just uses only the comment line immediately
 # preceding a recipe as its `--list` description.
 
 # Collect a previewed, privacy-respecting report and create an issue directly with gh.
 [group('System')]
 report *args:
-    UBLUE_IMAGE_REPO_BIN="/usr/local/libexec/utah-image-repo" \
-    BONEDIGGER_BRAND="🐦 Utah Bug Report" \
-    /usr/libexec/bonedigger-report {{ args }}
+    #!/usr/bin/bash
+    set -euo pipefail
+    if [[ ! -x /usr/local/libexec/utah-image-repo ]]; then
+        echo 'WARN: /usr/local/libexec/utah-image-repo is missing on this image; falling back to common'\''s ublue-image-repo. Bug reports will land in projectbluefin/common until the image is updated (projectbluefin/utah#487).' >&2
+        UBLUE_IMAGE_REPO_BIN=/usr/libexec/ublue-image-repo
+    else
+        UBLUE_IMAGE_REPO_BIN=/usr/local/libexec/utah-image-repo
+    fi
+    export UBLUE_IMAGE_REPO_BIN
+    export BONEDIGGER_BRAND="🐦 Utah Bug Report"
+    exec /usr/libexec/bonedigger-report {{ args }}
