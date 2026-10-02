@@ -71,8 +71,14 @@ than being noticed later.
 | Genuinely unavailable | **6** |
 
 The install writes its resolved list to `/usr/share/utah/contract.txt` and the
-verify step asserts *that file*, so the two cannot disagree. These counts are
-generated from `packages/bluefin.toml` and `packages/utah.toml`
+verify step asserts *that file*, so the two cannot disagree. Presence is only
+the first claim: the same step attests that GNOME packages carry the declared
+major version and an approved factory (`.bfin`) or Hummingbird (`.hum`) release
+identity, that parity packages resolved from the repository that is supposed to
+supply them, and that the runtime repository allowlist holds. It retains the
+resolved origin/NEVRA set with build provenance as
+`/usr/share/utah/package-origins.json` and `package-origins.txt`. These counts
+are generated from `packages/bluefin.toml` and `packages/utah.toml`
 (`scripts/generate-site-data.py`, `site/data/packages.json`); `just check`
 fails if this table drifts from that output (`scripts/check-doc-counts.py`).
 

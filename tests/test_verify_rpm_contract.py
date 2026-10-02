@@ -17,6 +17,7 @@ from __future__ import annotations
 import configparser
 import importlib.util
 import io
+import json
 import os
 import subprocess
 import sys
@@ -256,12 +257,17 @@ class VerifyModeTests(unittest.TestCase):
         self.module = load_module()
 
     def run_main(self, manifest: Path, overlay: Path, installed: set[str],
-                 flavor: str = "main") -> tuple[int, str]:
-        argv = ["verify-rpm-contract.py", str(manifest), str(overlay)]
+                 flavor: str = "main", releases: dict[str, str] | None = None,
+                 multilib: set[str] | None = None,
+                 extra_argv: list[str] | None = None,
+                 report_dir: Path | None = None) -> tuple[int, str]:
+        argv = ["verify-rpm-contract.py", *(extra_argv or []), str(manifest), str(overlay)]
         stdout = io.StringIO()
         overlay_data = tomllib.loads(overlay.read_text())
         gnome_versions = overlay_data.get("gnome", {}).get("versions", {})
         factory = set(overlay_data.get("factory", {}).get("packages", []))
+        releases = releases or {}
+        multilib = multilib or set()
 
         def fake_query(packages):
             result = {}
@@ -269,17 +275,25 @@ class VerifyModeTests(unittest.TestCase):
                 if pkg not in installed:
                     continue
                 major = gnome_versions.get(pkg, "1")
-                release = "1.bfin.x86_64" if pkg in factory else "1.hum.x86_64"
+                default_release = "1.bfin.x86_64" if pkg in factory else "1.hum.x86_64"
+                release = releases.get(pkg, default_release)
                 version = f"{major}.0"
-                result[pkg] = {
+                info = {
                     "name": pkg, "epoch": "0", "version": version,
                     "release": release, "arch": "x86_64",
                     "nevra": f"{pkg}-{version}-{release}",
-                    "origin": "factory" if pkg in factory else "hummingbird",
+                    "origin": "factory" if ".bfin" in release else (
+                        "hummingbird" if ".hum" in release else "fedora"),
                 }
+                if pkg in multilib:
+                    i686_release = release.replace("x86_64", "i686")
+                    other = {**info, "arch": "i686", "release": i686_release,
+                             "nevra": f"{pkg}-{version}-{i686_release}"}
+                    info = {**info, "installs": [dict(info), other]}
+                result[pkg] = info
             return result, []
 
-        report_dir = Path(tempfile.mkdtemp())
+        report_dir = report_dir or Path(tempfile.mkdtemp())
         with patch.object(self.module, "is_installed",
                           side_effect=lambda p: p in installed), \
                 patch.object(self.module, "query_packages", side_effect=fake_query), \
@@ -332,6 +346,61 @@ class VerifyModeTests(unittest.TestCase):
                 code, _ = self.run_main(manifest, overlay, {"bash"}, flavor="nvidia")
         self.assertEqual(code, 1)
         self.assertIn("  - nvidia-container-toolkit\n", stderr.getvalue())
+
+    def test_an_attestation_violation_fails_the_run(self) -> None:
+        """A bare Fedora GNOME package exits non-zero through main(), not just the helper."""
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            manifest = write_manifest(directory, ["bash"])
+            overlay = write_overlay(directory, gnome=["gnome-shell"])
+            report_dir = Path(tmp) / "report"
+            stderr = io.StringIO()
+            with patch.object(sys, "stderr", stderr):
+                code, _ = self.run_main(
+                    manifest, overlay, {"bash", "gnome-shell"},
+                    releases={"gnome-shell": "1.fc44.x86_64"},
+                    report_dir=report_dir,
+                )
+            self.assertFalse((report_dir / "package-origins.json").exists())
+        self.assertEqual(code, 1)
+        report = stderr.getvalue()
+        self.assertIn("supply-chain / repository contract violation(s)", report)
+        self.assertIn("unapproved Fedora release", report)
+
+    def test_no_report_verifies_without_retaining_the_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            manifest = write_manifest(directory, ["bash"])
+            overlay = write_overlay(directory, gnome=["gnome-shell"])
+            report_dir = Path(tmp) / "report"
+            code, out = self.run_main(
+                manifest, overlay, {"bash", "gnome-shell"},
+                extra_argv=["--no-report"], report_dir=report_dir,
+            )
+            self.assertFalse(report_dir.exists())
+        self.assertEqual(code, 0)
+        self.assertIn("Skipped provenance report retention (--no-report).", out)
+
+    def test_the_retained_report_records_every_multilib_install(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            manifest = write_manifest(directory, ["mesa-dri-drivers"])
+            overlay = write_overlay(directory)
+            report_dir = Path(tmp) / "report"
+            code, out = self.run_main(
+                manifest, overlay, {"mesa-dri-drivers"},
+                multilib={"mesa-dri-drivers"}, report_dir=report_dir,
+            )
+            data = json.loads((report_dir / "package-origins.json").read_text())
+            text = (report_dir / "package-origins.txt").read_text()
+        self.assertEqual(code, 0)
+        self.assertIn("Retained provenance report for 1 packages", out)
+        self.assertEqual(
+            [i["arch"] for i in data["packages"]["mesa-dri-drivers"]["installs"]],
+            ["x86_64", "i686"],
+        )
+        self.assertEqual(text.count("mesa-dri-drivers-1.0-1.hum.x86_64"), 1)
+        self.assertEqual(text.count("mesa-dri-drivers-1.0-1.hum.i686"), 1)
 
 
 class ResolvedContractTests(unittest.TestCase):
@@ -920,10 +989,30 @@ class SupplyChainTests(unittest.TestCase):
         self.assertEqual(source, "SOURCE_DATE_EPOCH")
         self.assertEqual(ts, "2023-11-14T22:13:20+00:00")
 
-    def test_resolve_build_timestamp_falls_back_when_epoch_unset(self) -> None:
+    def test_resolve_build_timestamp_records_nothing_when_epoch_unset(self) -> None:
         ts, source = self.module.resolve_build_timestamp({})
-        self.assertEqual(source, "sentinel-epoch")
-        self.assertEqual(ts, "2004-12-28T13:20:00+00:00")
+        self.assertIsNone(ts)
+        self.assertEqual(source, "unset")
+
+    def test_resolve_build_timestamp_records_nothing_when_epoch_unusable(self) -> None:
+        with patch.object(sys, "stderr", io.StringIO()):
+            ts, source = self.module.resolve_build_timestamp({"SOURCE_DATE_EPOCH": "not-an-epoch"})
+        self.assertIsNone(ts)
+        self.assertEqual(source, "unusable")
+
+    def test_read_factory_pin_reads_the_repo_file_stamp(self) -> None:
+        directory = Path(tempfile.mkdtemp())
+        repo_file = directory / "utah-packages.repo"
+        digest = "sha256:" + "a" * 64
+        repo_file.write_text(f"# a comment\n# factory-pin: {digest}\n[utah-packages]\n")
+        self.assertEqual(self.module.read_factory_pin(repo_file), digest)
+
+    def test_read_factory_pin_is_none_without_a_stamp_or_a_file(self) -> None:
+        directory = Path(tempfile.mkdtemp())
+        unstamped = directory / "utah-packages.repo"
+        unstamped.write_text("[utah-packages]\nenabled=1\n")
+        self.assertIsNone(self.module.read_factory_pin(unstamped))
+        self.assertIsNone(self.module.read_factory_pin(directory / "absent.repo"))
 
     def test_generate_provenance_report_writes_json_and_txt(self) -> None:
         output_dir = Path(tempfile.mkdtemp())
@@ -943,6 +1032,48 @@ class SupplyChainTests(unittest.TestCase):
         self.assertEqual(report["packages"]["gnome-shell"]["section"], "gnome")
         self.assertTrue((output_dir / "package-origins.json").exists())
         self.assertTrue((output_dir / "package-origins.txt").exists())
+
+    def test_generate_provenance_report_records_the_factory_pin_and_base_image(self) -> None:
+        """The report says which factory and which base the NEVRAs came from."""
+        output_dir = Path(tempfile.mkdtemp())
+        digest = "sha256:" + "b" * 64
+        base = "quay.io/hummingbird-community/bootc-os:latest@sha256:" + "c" * 64
+        installed = {
+            "gnome-shell": {"name": "gnome-shell", "epoch": "0", "version": "51.2",
+                            "release": "1.bfin.x86_64", "arch": "x86_64",
+                            "nevra": "gnome-shell-51.2-1.bfin.x86_64", "origin": "factory"},
+        }
+        with patch.object(self.module, "read_factory_pin", return_value=digest), \
+                patch.dict(os.environ, {"BASE_IMAGE": base}):
+            os.environ.pop("SOURCE_DATE_EPOCH", None)
+            report = self.module.generate_provenance_report(
+                installed, "main", set(), {}, output_dir=output_dir)
+        provenance = report["build_provenance"]
+        self.assertEqual(provenance["factory_pin"], digest)
+        self.assertEqual(provenance["base_image"], base)
+        self.assertEqual(provenance["base_image_digest"], "sha256:" + "c" * 64)
+        self.assertIsNone(provenance["timestamp"])
+        self.assertEqual(provenance["timestamp_source"], "unset")
+        text = (output_dir / "package-origins.txt").read_text()
+        self.assertIn(f"# Factory pin: {digest}", text)
+        self.assertIn("# Generated: unstamped (unset)", text)
+
+    def test_generate_provenance_report_records_every_multilib_install(self) -> None:
+        """A multilib pair is two installs of one name; both reach the report."""
+        output_dir = Path(tempfile.mkdtemp())
+        x86 = {"name": "mesa-dri-drivers", "epoch": "0", "version": "25.1",
+               "release": "1.hum.x86_64", "arch": "x86_64",
+               "nevra": "mesa-dri-drivers-25.1-1.hum.x86_64", "origin": "hummingbird"}
+        i686 = {**x86, "arch": "i686", "release": "1.hum.i686",
+                "nevra": "mesa-dri-drivers-25.1-1.hum.i686"}
+        installed = {"mesa-dri-drivers": {**x86, "installs": [x86, i686]}}
+        report = self.module.generate_provenance_report(
+            installed, "main", set(), {"mesa-dri-drivers": "parity"}, output_dir=output_dir)
+        installs = report["packages"]["mesa-dri-drivers"]["installs"]
+        self.assertEqual([i["arch"] for i in installs], ["x86_64", "i686"])
+        text = (output_dir / "package-origins.txt").read_text()
+        self.assertIn("mesa-dri-drivers-25.1-1.hum.x86_64", text)
+        self.assertIn("mesa-dri-drivers-25.1-1.hum.i686", text)
 class UsageTests(unittest.TestCase):
     """The manifest argument is required; the verifier must not run without one."""
 
