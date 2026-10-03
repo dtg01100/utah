@@ -404,9 +404,18 @@ def verify_repository_policy(
     In check_mode, a marked builder-only file is skipped only when Containerfile
     copies it into a builder and not into the final runtime stage. A comment
     alone cannot exempt a runtime repository from policy.
+
+    In check_mode=False (the on-image attestation path), a missing reposdir
+    is itself an error: an empty scan would falsely attest that the runtime
+    has no unapproved repositories, when it actually has no scan target at
+    all (#458 review).
     """
     errors: list[str] = []
     if not repos_dir.is_dir():
+        if not check_mode:
+            errors.append(
+                f"Runtime repository directory does not exist: {repos_dir}"
+            )
         return errors
     builder_files = builder_only_repo_files(repos_dir) if check_mode else set()
     for repo_file in sorted(repos_dir.glob("*.repo")):

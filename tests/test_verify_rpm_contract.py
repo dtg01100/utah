@@ -1088,6 +1088,25 @@ class SupplyChainTests(unittest.TestCase):
             directory, set(), check_mode=True, expected_baseurls=None)
         self.assertEqual(errors, [])
 
+    def test_verify_repository_policy_errors_on_missing_dir_in_on_image_mode(self) -> None:
+        """An empty scan would falsely attest 'no unapproved repos'; error instead."""
+        directory = Path(tempfile.mkdtemp())
+        missing = directory / "absent-repos.d"
+        errors = self.module.verify_repository_policy(
+            missing, set(), check_mode=False, expected_baseurls=None)
+        self.assertTrue(
+            any("does not exist" in err for err in errors),
+            f"expected a 'does not exist' error, got {errors!r}",
+        )
+
+    def test_verify_repository_policy_silently_skips_missing_dir_in_check_mode(self) -> None:
+        """In check_mode a missing dir is benign (the host's reposdir may simply be unset)."""
+        directory = Path(tempfile.mkdtemp())
+        missing = directory / "absent-repos.d"
+        errors = self.module.verify_repository_policy(
+            missing, set(), check_mode=True, expected_baseurls=None)
+        self.assertEqual(errors, [])
+
     def test_resolve_build_timestamp_reads_source_date_epoch(self) -> None:
         ts, source = self.module.resolve_build_timestamp({"SOURCE_DATE_EPOCH": "1700000000"})
         self.assertEqual(source, "SOURCE_DATE_EPOCH")
