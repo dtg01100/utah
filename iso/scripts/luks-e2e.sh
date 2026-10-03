@@ -825,15 +825,12 @@ fi
 # only because the terminal-automation phase above happens to need it --
 # install-flatpaks.sh keeps Ghostty out of the Brewfile-derived list on
 # purpose, as Utah's own addition rather than the Bluefin parity contract.
-# The installed system carries /usr/libexec/utah-parse-brewfile-flatpaks,
-# which delegates to the desktop verifier's canonical parser, so both sides
-# reject `flatpak "id", args: "x"` consistently (#510).
 # UTAH_E2E_FLATPAKS overrides the expected set directly; empty to skip.
 if [[ -n "${UTAH_E2E_FLATPAKS-x}" ]]; then
     if [[ -n "${UTAH_E2E_FLATPAKS-}" ]]; then
         expected_flatpaks="${UTAH_E2E_FLATPAKS}"
     else
-        expected_flatpaks="$(ssh_target "/usr/libexec/utah-parse-brewfile-flatpaks /usr/share/ublue-os/homebrew/system-flatpaks.Brewfile" 2>/dev/null || true)"
+        expected_flatpaks="$(ssh_target "awk -F '\"' '/^flatpak / {print \$2}' /usr/share/ublue-os/homebrew/system-flatpaks.Brewfile" 2>/dev/null || true)"
         [[ -n "${expected_flatpaks}" ]] || fail "could not read the default Flatpak Brewfile on the installed system"
     fi
     missing_flatpaks=()

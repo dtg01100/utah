@@ -305,7 +305,7 @@ and stores `logo` as an opaque string, so a dangling path compiles
 cleanly. The image itself is guarded by the new `[branding].files`
 entry for `/usr/share/pixmaps/bluefin-gdm-logo.png` in
 `contracts/bluefin-desktop.toml`, enforced by
-`utah-verify-desktop-contract` in the final cleanup `RUN` layer.
+`utah-verify-desktop-contract` in the same `RUN` layer.
 
 `[configuration].files` asserts the keyfile's path on disk;
 `[configuration].file_contains` pins both the schema header and the
@@ -423,11 +423,10 @@ The same verifier runs in the Containerfile and on demand, so a local image
 or a CI artifact can be checked after the fact (recipe comment, `Justfile`,
 `check-desktop-contract`):
 
-- **In the image build** — the final cleanup RUN invokes
-  `/usr/libexec/utah-verify-desktop-contract /usr/share/utah/bluefin-desktop.toml`
-  after cleanup, before bootc lint. The Flatpak file contract requires both
-  runtime parser programs, so cleanup cannot silently strip either consumer.
-  The extension verifier runs earlier during desktop composition.
+- **In the image build** — the desktop RUN step ends with
+  `utah-verify-desktop-contract /usr/share/utah/bluefin-desktop.toml`, after
+  branding and services are configured; a contract failure fails the build.
+  The extension verifier runs earlier in the same step.
 - **On demand** — `just check-desktop-contract <ref>` (default
   `localhost/utah:testing`) podman-runs both verifiers inside an
   already-composed image: both verifiers and the desktop contract are

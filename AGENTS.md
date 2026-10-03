@@ -69,11 +69,9 @@ checks (`scripts/check-skill-frontmatter.sh`, `scripts/check-skill-index.sh`,
   `packages/hummingbird.repo` (`scripts/kernel-cache-tag.sh`). Any edit to
   those files — comments included — forces a ~45-minute cache rebuild. That is
   deliberate; just know it before you touch them.
-- **Utah build-only scripts install as `/usr/local/libexec/utah-*`** via one
-  staged COPY and rename loop. Cleanup removes that `/var/usrlocal` tree.
-  The shared Brewfile parser and desktop verifier are runtime consumers and
-  install under immutable `/usr/libexec/utah-*`, which survives cleanup.
-  A new script means updating the COPY list, its install, and `just check`.
+- **Utah scripts install as `/usr/local/libexec/utah-*`** via one staged COPY
+  and a rename loop in the Containerfile. A new script means updating the COPY
+  list, the rename loop, and `just check`.
 - **`ENABLE_SSHD=1` is local-diagnostic only.** Never in a published image.
 - **Fedora repositories are never enabled at runtime.** Packages come from the
   pinned `utah-packages` OCI repository and Hummingbird's own repository.

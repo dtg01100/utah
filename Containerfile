@@ -88,7 +88,6 @@ COPY scripts/install-packages.py \
      scripts/fix-home-labels.sh \
      scripts/install-v4l2loopback.sh \
      scripts/image-repo.sh \
-     scripts/parse-brewfile-flatpaks.sh \
      /tmp/utah-scripts/
 # Common publishes Bluefin artwork, desktop defaults, Brewfiles, and setup
 # hooks in a separate profile from its shared system files. Both are required:
@@ -131,6 +130,7 @@ RUN --mount=type=bind,from=v4l2loopback,source=/out,target=/tmp/utah-v4l2loopbac
                 clean-stage.sh:utah-clean-stage \
                 configure-services.sh:utah-configure-services \
                 configure-branding.sh:utah-configure-branding \
+                verify-desktop-contract.py:utah-verify-desktop-contract \
                 verify-gnome-extensions.py:utah-verify-gnome-extensions \
                 mirror-shim.sh:utah-mirror-shim \
                 verify-efi-chain.sh:utah-verify-efi-chain \
@@ -139,8 +139,6 @@ RUN --mount=type=bind,from=v4l2loopback,source=/out,target=/tmp/utah-v4l2loopbac
                 image-repo.sh:utah-image-repo; do \
       install -Dm 0755 "/tmp/utah-scripts/${pair%%:*}" "/usr/local/libexec/${pair##*:}" || exit 1; \
     done && \
-    install -Dm 0755 /tmp/utah-scripts/verify-desktop-contract.py /usr/libexec/utah-verify-desktop-contract && \
-    install -Dm 0755 /tmp/utah-scripts/parse-brewfile-flatpaks.sh /usr/libexec/utah-parse-brewfile-flatpaks && \
     cp -a /tmp/utah-common/. / && \
     cp -a /tmp/utah-bluefin/. / && \
     cp -a /tmp/utah-brew/. / && \
@@ -256,6 +254,7 @@ RUN mkdir -p /tmp/uupd && \
     glib-compile-schemas /usr/share/glib-2.0/schemas && \
     ENABLE_SSHD="${ENABLE_SSHD}" /usr/local/libexec/utah-configure-services && \
     /usr/local/libexec/utah-configure-branding && \
+    /usr/local/libexec/utah-verify-desktop-contract /usr/share/utah/bluefin-desktop.toml && \
     /usr/local/libexec/utah-mirror-shim && \
     /usr/local/libexec/utah-verify-efi-chain
 
@@ -293,10 +292,9 @@ RUN --mount=type=bind,from=packages,source=/repository,target=/etc/utah-packages
 # with no tmpfiles.d entry. This must run after the last package install, which
 # is the NVIDIA and OGC step, not after the main transaction. The lint that
 # checks the result runs in the same layer: nothing can change between the two.
-# The home-label check runs first: clean-stage removes the build-only helpers.
+# The home-label check runs first: clean-stage removes the utah-* helpers.
 RUN /usr/local/libexec/utah-fix-home-labels --check && \
     /usr/local/libexec/utah-clean-stage && \
-    /usr/libexec/utah-verify-desktop-contract /usr/share/utah/bluefin-desktop.toml && \
     bootc container lint --fatal-warnings --skip nonempty-boot
 
 LABEL org.opencontainers.image.title="Utah"
