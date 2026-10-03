@@ -140,28 +140,46 @@ install-set check it attests the supply chain the image is composed from
   `[gnome.versions]`, and its release must carry the factory or Hummingbird
   identity (a `.bfin`/`.hum` release tag). A GNOME package resolving to a bare
   Fedora release is rejected: the factory builds GNOME, not the runtime base.
+  This runs on-image only; `--check` instead asserts that every
+  `[gnome.versions]` key names a package declared in `[gnome]`, so a misspelled
+  key fails the manifest check rather than silently dropping that package's
+  version claim.
 - **Parity origin** (`verify_parity_origin`) — a Bluefin parity package named
   in `[factory] parity` must carry the factory's `.bfin` release identity, so a
   package the factory supplies cannot silently resolve from another repository;
   every other parity package is rejected if it resolves to a bare Fedora
   release. This runs on-image only, against the releases RPM actually resolved:
   `--check` has no installed packages to read and does not call it. `--check`
-  asserts that `[factory].packages` names GNOME packages and `[factory].parity`
-  names parity packages. Both modes reject declarations outside those sections.
-- **Repository allowlist** (`verify_repository_policy`) — source `.repo` files
-  reject enabled Fedora/unapproved repositories and pin every allowlisted
-  origin, including the disabled NVIDIA repository. Proxy/TLS drift on an
-  allowlisted repo is rejected. A `# builder-only: true` file is skipped only
-  when the Containerfile copies it into a builder and never the final stage.
-  `--check` scans `packages/*.repo`; on-image verification scans the real
-  `/etc/yum.repos.d` with no builder exemptions, including inherited files.
-  The exact pinned base (`sha256:ddf19cc52fccb9ad4819b0fb9289f26912894c95555ccb4e95dc38e1dab4dc12`)
-  was inspected: it ships only `hummingbird.repo` there, with
-  `[public-hummingbird-$basearch-rpms]` and the `/public-hummingbird/$arch/`
-  baseurl, plus a disabled source section. Utah's runtime COPY replaces that
-  file with its explicit x86_64 pin. A renamed/new inherited enabled repository
-  must fail the gate; do not delete inherited files to make it pass. A future
-  base pin requires fresh inventory and a real composed-image verification.
+  does assert that `[factory].packages` names GNOME packages (the only section
+  that consumes that bucket) and `[factory].parity` names parity packages. The
+  same membership rules apply on-image; an unrelated hardware/service entry
+  cannot silently claim a factory assertion.
+- **Repository allowlist** (`verify_repository_policy`) — `.repo` files reject
+  enabled Fedora/unapproved repositories and pin every allowlisted origin,
+  including the disabled NVIDIA repository. Proxy/TLS drift on an allowlisted
+  repo is rejected. A `# builder-only: true` file is skipped only when the
+  Containerfile copies it into a builder and never the final stage; a marker on
+  a runtime COPY is an error. `--check` scans the source files in `packages/`;
+  the on-image run additionally scans the composed image's `/etc/yum.repos.d`,
+  so repository files shipped by the base image pinned in `Containerfile` L1 are
+  subject to the same allowlist (#454). The runtime scan uses `check_mode=False`
+  because the v4l2loopback stage's builder-only repo files are never copied into
+  the runtime layer (`Containerfile`, v4l2loopback stage).
+  The scan relies on the `COPY packages/hummingbird.repo …
+  /etc/yum.repos.d/` line (`Containerfile`, runtime stage) overwriting whatever
+  the base image ships under `/etc/yum.repos.d/hummingbird.repo`; if the base
+  changes that file's section id or baseurl without Utah shipping a matching
+  override, the build fails with the intended trip-wire message from
+  `check_repo_sections`. Operators updating the base pin must keep this coupling
+  intact. The base digest currently pinned at `Containerfile` L1 was inspected:
+  it ships only `hummingbird.repo` under `/etc/yum.repos.d`, with a
+  `[public-hummingbird-$basearch-rpms]` section and a disabled source section,
+  and Utah's runtime COPY replaces that file with its explicit x86_64 pin. A
+  renamed or newly inherited enabled repository must fail the gate; do not
+  delete inherited files to make it pass. Each new base pin requires fresh
+  inventory and a real composed-image verification. The scan covers
+  `/etc/yum.repos.d` only; dnf5's other default `reposdir` entries
+  (`/etc/distro.repos.d`, `/usr/share/dnf5/repos.d`) are out of scope for #454.
 - **Build provenance** (`generate_provenance_report`) — the resolved
   package-origin/NEVRA data is written as JSON plus a human-readable report to
   `$UTAH_REPORT_DIR` (default `/usr/share/utah`), retaining the image flavor,

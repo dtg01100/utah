@@ -4,9 +4,13 @@
 Beyond package presence, this is the supply-chain attestation for issue #21:
 GNOME packages carry the promised major version and an approved factory
 (`.bfin`) or Hummingbird (`.hum`) identity; parity packages cannot silently
-resolve from an unapproved Fedora repository; the system exposes only the
-runtime repositories the manifest allows; and the resolved package-origin/NEVRA
-set is retained as a report with build provenance.
+resolve from an unapproved Fedora repository; enabled repositories under
+the composed image's /etc/yum.repos.d satisfy the manifest allowlist; and the
+resolved package-origin/NEVRA set is retained as a report with build provenance.
+
+`--check` validates the manifest itself off-image: the `.repo` files in
+`packages/` may name only the repositories the manifest allows. The on-image
+run applies the same allowlist to the composed image's /etc/yum.repos.d files.
 
 Mirrors assert_packages_present from projectbluefin/bluefin's
 build_files/shared/package-lib.sh: name every missing package, once.
@@ -328,14 +332,13 @@ def check_repo_sections(
     source: str,
     allowed_repos: set[str],
     *,
-    skip_sections: frozenset[str] = frozenset(),
+
     expected_baseurls: dict[str, tuple[str, ...]] | None,
 ) -> list[str]:
     """Apply the allowlist to every section of an already-parsed config."""
     errors: list[str] = []
     for section_name in parser.sections():
-        if section_name in skip_sections:
-            continue
+
         if not is_repo_enabled(parser.get(section_name, "enabled", fallback="1")):
             if section_name in allowed_repos:
                 errors.extend(repo_security_option_errors(section_name, parser, source))
@@ -645,6 +648,8 @@ def main() -> int:
         return 1
     factory_packages = set(section(overlay, "factory"))
     factory_parity = set(section(overlay, "factory", "parity"))
+    # [factory].packages is the GNOME identity contract; other sections use
+    # explicit factory buckets (currently parity), never an inert declaration.
     for pkg in factory_packages:
         assert pkg in set(section(overlay, "gnome")), (
             f"Factory package '{pkg}' is not declared in the [gnome] section"
@@ -682,8 +687,12 @@ def main() -> int:
             assert pkg in parity, (
                 f"Factory parity package '{pkg}' is not declared in the [parity] section"
             )
+        # A [gnome.versions] key that names no [gnome] package asserts nothing:
+        # verify_gnome_contract looks versions up by package name, so a typo
+        # would silently drop that package's major-version claim on-image.
+        gnome_names = set(gnome)
         for pkg in major_versions:
-            assert pkg in gnome, (
+            assert pkg in gnome_names, (
                 f"[gnome.versions] key '{pkg}' is not declared in the [gnome] section"
             )
         repo_errors = verify_repository_policy(
