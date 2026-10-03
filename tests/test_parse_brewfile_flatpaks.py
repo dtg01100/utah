@@ -1,5 +1,6 @@
 """Exercise the shared Brewfile CLI's declaration grammar and error boundaries."""
 
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -7,6 +8,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / "scripts/parse-brewfile-flatpaks.sh"
+SOURCE_VERIFIER = ROOT / "scripts/verify-desktop-contract.py"
+INSTALLED_NAME = "utah-parse-brewfile-flatpaks"
+INSTALLED_VERIFIER = "utah-verify-desktop-contract"
 
 
 class ParseBrewfileFlatpaksTests(unittest.TestCase):
@@ -66,6 +70,32 @@ class ParseBrewfileFlatpaksTests(unittest.TestCase):
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 2)
         self.assertEqual(result.stdout, "")
+
+    def test_installed_name_branch_executes_the_installed_verifier(self):
+        # The branch production actually runs is the one where
+        # BASH_SOURCE[0] is "utah-parse-brewfile-flatpaks"; that case
+        # exec()s the installed utah-verify-desktop-contract helper, not
+        # the source name. We exercise it by copying both scripts into a
+        # tempdir under their installed names and running the helper
+        # from there. A test that runs the source name would only cover
+        # the local-dev branch and miss the production selector entirely.
+        if not SOURCE_VERIFIER.exists():
+            self.skipTest(f"missing source verifier: {SOURCE_VERIFIER}")
+        with tempfile.TemporaryDirectory(prefix="brewfile-installed-") as tmp:
+            tmp_path = Path(tmp)
+            helper_dest = tmp_path / INSTALLED_NAME
+            verifier_dest = tmp_path / INSTALLED_VERIFIER
+            shutil.copy2(HELPER, helper_dest)
+            shutil.copy2(SOURCE_VERIFIER, verifier_dest)
+            helper_dest.chmod(0o755)
+            verifier_dest.chmod(0o755)
+
+            brewfile = tmp_path / "Brewfile"
+            brewfile.write_text('flatpak "org.gnome.Maps"\n')
+            result = subprocess.run([str(helper_dest), str(brewfile)],
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.splitlines(), ["org.gnome.Maps"])
 
 
 if __name__ == "__main__":
