@@ -63,17 +63,24 @@ files = [
   # falls back to /usr/share/pixmaps/fedora-gdm-logo.png from fedora-logos,
   # and the login screen shows the Fedora wordmark instead of Bluefin (#378).
   "/etc/dconf/db/gdm.d/01-bluefin-gdm-logo",
-  # NVreg_DynamicPowerManagement=0x01 — the GSP firmware's default 0x02
-  # crashes during the unload phase of suspend on Turing+ hardware with the
-  # 595.x open kernel modules that Utah builds from NVIDIA's `.run`
-  # installer, leaving the user with a black screen and a hung
-  # systemd-suspend.service (#492). The option is inert on flavors without
-  # the nvidia module, so this assertion is safe on every image. The file
-  # lives in shared/ alongside common#1176's zz-nvidia-suspend.conf, which
-  # pins UseKernelSuspendNotifiers=1 and TemporaryFilePath=/var/tmp; the
-  # zz- prefix keeps this assignment sorted after both so it wins any
-  # duplicate. See docs/skills/kernel-cache.md "The NVIDIA suspend / PM
-  # quirk".
+  # NVreg_DynamicPowerManagement=0x01 — candidate workaround for #492: on
+  # Turing notebooks with the 595.x open kernel modules that Utah builds
+  # from NVIDIA's `.run` installer, the GSP firmware crashes during the
+  # unload phase of suspend, leaving the user with a black screen and a
+  # hung systemd-suspend.service. NVIDIA's RTD3 default is 0x03, which on
+  # pre-Ampere notebooks (including the reporter's Turing GTX 1650 Ti
+  # Mobile) and on all desktops disables runtime D3 entirely; pinning
+  # 0x01 enables coarse-grained RTD3 instead, which the GSP firmware can
+  # tear down cleanly across suspend. Reporter-side verification on the
+  # actual hardware is owed before the fix is declared authoritative. The
+  # option is inert on flavors without the nvidia module, so this
+  # assertion is safe on every image. The file lives in shared/ alongside
+  # common#1176's zz-nvidia-suspend.conf, which sets
+  # UseKernelSuspendNotifiers=1 and TemporaryFilePath=/var/tmp; the two
+  # files do not overlap on this parameter, so relative ordering is moot.
+  # The zz- prefix sorts this file after the driver package's nvidia.conf,
+  # so this assignment wins any duplicate that package also sets. See
+  # docs/skills/kernel-cache.md "The NVIDIA suspend / PM quirk".
   "/usr/lib/modprobe.d/zz-nvidia-pm.conf",
 ]
 
@@ -99,7 +106,7 @@ files = [
 ]
 # The PM quirk pins the option to 0x01 specifically. Asserting the literal
 # form catches both regressions (the option removed) and silent drift to
-# 0x02 (the default that crashes). A 0x03 value or a typo would also fail
+# any other value. A 0x00 / 0x02 / 0x03 value or a typo would also fail
 # this assertion.
 "/usr/lib/modprobe.d/zz-nvidia-pm.conf" = [
   "options nvidia NVreg_DynamicPowerManagement=0x01",

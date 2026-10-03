@@ -1,9 +1,9 @@
 """The NVIDIA GSP-firmware suspend quirk must survive every Utah build.
 
 On the 595.x open kernel modules Utah builds from NVIDIA's `.run` installer
-(``scripts/install-nvidia.sh``), the GSP firmware's default deep idle
-configuration crashes during the suspend unload phase. The kernel log
-sequence is:
+(``scripts/install-nvidia.sh``), the GSP firmware crashes during the suspend
+unload phase on Turing notebooks (the reporter's #492 hardware is a GTX 1650
+Ti Mobile). The kernel log sequence is:
 
     NVRM: nvAssertFailedNoLog: ... @ kern_bus_vbar2.c:346
     NVRM: kgspHealthCheck_TU102: * GSP-CrashCat Report *
@@ -14,26 +14,39 @@ sequence is:
     BUG: unable to handle page fault for address: 00000000000026b0
     Oops: 0000 in nvEvoDisableVblankSemControl
 
--- see projectbluefin/utah#492 and NVIDIA/open-gpu-kernel-modules#1271.
+-- see projectbluefin/utah#492.
+
+NVIDIA's RTD3 documentation (Chapter 22, RTD3 Power Management, ``595.71.05``)
+defines ``NVreg_DynamicPowerManagement`` with four values. The driver default
+is ``0x03``: on Ampere-or-newer notebooks this translates to ``0x02``
+(fine-grained runtime D3); on pre-Ampere notebooks (including the reporter's
+Turing GTX 1650 Ti Mobile) and on all desktop SKUs, ``0x03`` *disables*
+runtime D3 power management entirely. The candidate workaround is
+``NVreg_DynamicPowerManagement=0x01``, which enables coarse-grained runtime
+D3 so the driver tears down the GSP firmware state cleanly across suspend.
+Reporter-side verification on the actual hardware is owed before the fix is
+declared authoritative.
 
 The fix is a single modprobe option, ``NVreg_DynamicPowerManagement=0x01``,
 in ``system_files/shared/usr/lib/modprobe.d/zz-nvidia-pm.conf``. The file
 lives in the shared layer because the option is inert on systems without
 the nvidia module (the kernel ignores options for absent modules), so
 shipping it on every flavor is safe. The ``zz-`` prefix sorts the file
-after common#1176's ``zz-nvidia-suspend.conf``, which pins
-``UseKernelSuspendNotifiers=1`` and ``TemporaryFilePath=/var/tmp`` -- a
-different failure mode (the driver vetoes suspend), but a sibling quirk
-that also has to keep working.
+after the driver package's ``nvidia.conf`` so this assignment wins any
+duplicate. The option does not overlap with common#1176's
+``zz-nvidia-suspend.conf``, which pins ``UseKernelSuspendNotifiers=1`` and
+``TemporaryFilePath=/var/tmp`` -- a different failure mode (the driver
+vetoes suspend), a sibling quirk that has to keep working, and which
+lives in projectbluefin/common.
 
 These tests guard three independent regressions:
 
 - the file disappears from the source tree (CI never builds an image with
   the option set),
-- the option is removed or mutated to the default ``0x02`` value (silent
-  drift back to the crashing behaviour, no kernel-level audit trail),
-- the option is left in place but the sort order breaks -- the driver
-  package's ``nvidia.conf`` ships at ``/usr/lib/modprobe.d/nvidia.conf``;
+- the option is removed or mutated away from ``0x01`` (silent drift; the
+  values ``0x00``, ``0x02``, and ``0x03`` are all rejected on sight),
+- the option is left in place but the ``zz-`` prefix is dropped -- the
+  driver package's ``nvidia.conf`` ships at ``/usr/lib/modprobe.d/nvidia.conf``;
   if Utah's file ever loses its ``zz-`` prefix, a duplicate on
   ``nvidia.conf`` would silently win.
 """
@@ -61,9 +74,9 @@ class NvidiaPmModprobeTests(unittest.TestCase):
         )
 
     def test_pins_DynamicPowerManagement_to_0x01(self):
-        """The 0x01 value is the workaround. 0x02 (the default that
-        crashes) and 0x03 (uncommitted / vendor experiment) must both be
-        rejected on sight."""
+        """The 0x01 value is the candidate workaround for #492. The
+        driver default 0x03 and the fine-grained 0x02 must both be
+        rejected on sight; 0x00 must be rejected as it disables RTD3."""
         content = PM_CONF.read_text()
         match = re.search(
             r"^options\s+nvidia\s+NVreg_DynamicPowerManagement\s*=\s*(0x[0-9A-Fa-f]+|\d+)\s*$",
@@ -79,15 +92,16 @@ class NvidiaPmModprobeTests(unittest.TestCase):
         self.assertEqual(
             match.group(1).lower(),
             "0x01",
-            "NVreg_DynamicPowerManagement must be 0x01 (the workaround). "
-            "0x02 is the driver default that crashes on suspend (#492); "
-            "0x03 is uncommitted. Do not change without a tracking issue.",
+            "NVreg_DynamicPowerManagement must be 0x01 (the candidate workaround "
+            "for #492). 0x00 disables RTD3 entirely; 0x02 is fine-grained; 0x03 "
+            "is the driver default and on Turing notebooks and desktops disables "
+            "RTD3, which is the state #492 reproduces in. Do not change without "
+            "a tracking issue and reporter-side verification.",
         )
 
     def test_filename_starts_with_zz_so(self):
         """The ``zz-`` prefix keeps the assignment sorted after the driver
-        package's ``nvidia.conf`` and after common#1176's
-        ``zz-nvidia-suspend.conf``. Last assignment in modprobe.d wins, so
+        package's ``nvidia.conf``. Last assignment in modprobe.d wins, so
         dropping the prefix would let a package override the option."""
         self.assertTrue(
             PM_CONF.name.startswith("zz-"),
@@ -112,15 +126,24 @@ class NvidiaPmModprobeTests(unittest.TestCase):
         ``UseKernelSuspendNotifiers`` or ``TemporaryFilePath`` to a
         different value than common ships, because that would be a
         silent override of a sibling quirk Utah does not own."""
-        content = PM_CONF.read_text()
+        # Strip comments before scanning for option assignments: the
+        # header legitimately names common#1176's options to explain
+        # why this file does not also set them, but the assertions are
+        # about the *assignment* surface (the `options` lines), not the
+        # prose.
+        options_lines = "\n".join(
+            line
+            for line in PM_CONF.read_text().splitlines()
+            if not line.lstrip().startswith("#")
+        )
         for forbidden in (
             "UseKernelSuspendNotifiers",
             "TemporaryFilePath",
         ):
             self.assertNotIn(
                 forbidden,
-                content,
-                f"{PM_CONF.relative_to(ROOT)} must not touch "
+                options_lines,
+                f"{PM_CONF.relative_to(ROOT)} must not assign "
                 f"{forbidden}; that is common#1176's quirk and lives "
                 "in system_files/shared/usr/lib/modprobe.d/zz-nvidia-suspend.conf. "
                 "Setting it here would silently override common's value.",

@@ -130,21 +130,40 @@ init libOS PMU logging structures` → `Xid 119, Timeout after Ns of
 waiting for RPC` → `BUG: unable to handle page fault for address:
 00000000000026b0` → `Oops: 0000` in `nvEvoDisableVblankSemControl`. The
 display never returns; only a hard power-off recovers the machine
-(projectbluefin/utah#492, NVIDIA/open-gpu-kernel-modules#1271).
+(projectbluefin/utah#492).
 
-The fix is `NVreg_DynamicPowerManagement=0x01`, set in
-`system_files/shared/usr/lib/modprobe.d/zz-nvidia-pm.conf`. The
-`zz-` prefix sorts it after the driver package's `nvidia.conf` (and
-after common#1176's `zz-nvidia-suspend.conf`, which pins
+NVIDIA's RTD3 documentation (Chapter 22, RTD3 Power Management,
+`595.71.05`) defines `NVreg_DynamicPowerManagement` as:
+
+| value | meaning on Turing / pre-Ampere notebooks and all desktops |
+| --- | --- |
+| `0x00` | runtime D3 disabled; driver only uses built-in power management |
+| `0x01` | coarse-grained power control: GPU powered down when no NVIDIA workload |
+| `0x02` | fine-grained power control: driver also monitors usage mid-workload |
+| `0x03` | default; on Ampere-or-newer notebooks this is `0x02`; on pre-Ampere notebooks and all desktops this *disables* runtime D3 entirely |
+
+The reporter's hardware (#492) is a GTX 1650 Ti Mobile — a Turing
+notebook, which is pre-Ampere — so on that machine the default `0x03`
+currently has runtime D3 disabled. The candidate workaround is
+`NVreg_DynamicPowerManagement=0x01`, set in
+`system_files/shared/usr/lib/modprobe.d/zz-nvidia-pm.conf`. Enabling
+coarse-grained RTD3 makes the driver tear down GSP firmware state
+before powering the GPU down rather than aborting mid-unload.
+Reporter-side verification on the actual hardware is owed before the
+fix is declared authoritative.
+
+The `zz-` prefix sorts the file after the driver package's `nvidia.conf`
+so this assignment wins any duplicate. The option does not overlap
+with common#1176's `zz-nvidia-suspend.conf` (which pins
 `UseKernelSuspendNotifiers=1` and `TemporaryFilePath=/var/tmp` to keep
-the suspend transition out of the driver-veto path) so this assignment
-wins any duplicate. The option is honoured by Turing+ drivers, inert on
-systems without the nvidia module, and lives in the shared layer because
-the options are safe on every flavor including `main` and `gaming` which
-never load nvidia. Trade-off: the GPU no longer power-gates into its
-deepest idle state, costing a small amount of idle power. On a hybrid
-laptop the iGPU drives the display, so the user-visible cost is
-effectively nil.
+the suspend transition out of the driver-veto path); the relative
+ordering of the two files is moot for this parameter. The option is
+honoured by Turing+ drivers, inert on systems without the nvidia
+module, and lives in the shared layer because the options are safe on
+every flavor including `main` and `gaming` which never load nvidia.
+Trade-off: enabling RTD3 increases idle power draw marginally versus
+the default (which has the feature off). On a hybrid laptop the iGPU
+drives the display, so the user-visible cost is effectively nil.
 
 When diagnosing a black screen after suspend on a Utah NVIDIA image,
 capture `journalctl -b -1` before reboot and grep for `NVRM:`. A

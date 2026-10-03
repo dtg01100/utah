@@ -68,12 +68,13 @@ check:
     # The NVIDIA GSP-firmware suspend quirk (#492) has to ship on every flavor:
     # the option is inert when the nvidia module is absent, so a shared-layer
     # modprobe drop-in is the right place. The grep asserts the literal value:
-    # 0x02 is the driver default that crashes on suspend; 0x01 is the
-    # workaround. Catching a drift back to 0x02 here is cheaper than diagnosing
-    # a hung black screen in the field. The sibling quirk from common#1176
-    # (zz-nvidia-suspend.conf, pinning UseKernelSuspendNotifiers and
-    # TemporaryFilePath) lives in common, not in this repo; that one is
-    # checked in common's testsuite, not here.
+    # on the reporter's Turing notebook the driver default 0x03 has runtime
+    # D3 disabled, and pinning 0x01 enables coarse-grained RTD3 so the GSP
+    # firmware tears down cleanly across suspend. Catching drift away from
+    # 0x01 here is cheaper than diagnosing a hung black screen in the field.
+    # The sibling quirk from common#1176 (zz-nvidia-suspend.conf, pinning
+    # UseKernelSuspendNotifiers and TemporaryFilePath) lives in common, not
+    # in this repo; that one is checked in common's testsuite, not here.
     test -f system_files/shared/usr/lib/modprobe.d/zz-nvidia-pm.conf
     grep -q 'NVreg_DynamicPowerManagement=0x01' system_files/shared/usr/lib/modprobe.d/zz-nvidia-pm.conf
     test -f scripts/configure-services.sh
