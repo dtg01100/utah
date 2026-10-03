@@ -105,7 +105,8 @@ def dakota(run: str, out: Path) -> None:
         if not ref.endswith(".bst"):
             continue  # "-N" entries are the sources of an element, not elements
         rows.add((ref, pkg.get("name") or "", pkg.get("versionInfo") or ""))
-    lines = ["# element\tname\tversion"] + ["\t".join(r) for r in sorted(rows)]
+    lines = ["# element\tname\tversion"] + ["\t".join(r).rstrip("\t")
+                                           for r in sorted(rows)]
     (out / "elements.tsv").write_text("\n".join(lines) + "\n")
     (out / "source.txt").write_text(
         f"projectbluefin/dakota publish.yml run {run}, artifact sbom-dakota\n")

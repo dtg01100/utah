@@ -432,7 +432,16 @@ build-local stream="testing" package_image="localhost/utah-packages:local-merged
     # Unlike build-ghcr this overrides PACKAGE_IMAGE_REF, so the bare ARGs
     # would otherwise inherit the ghcr pin the local image did not come
     # from; both are passed explicitly to record what was really consumed.
-    package_image_sha="${PACKAGE_IMAGE_SHA:-unknown}"
+    # The package image is already in containers-storage (checked above), so
+    # its local manifest digest is what this build really consumes. Record it
+    # by default; PACKAGE_IMAGE_SHA overrides when the caller knows the
+    # registry digest the local copy was pulled from.
+    package_image_sha="${PACKAGE_IMAGE_SHA:-}"
+    if [[ -z "$package_image_sha" ]]; then
+      package_image_sha="$(podman image inspect \
+        --format '{{{{.Digest}}' "$package_image" 2>/dev/null || true)"
+    fi
+    package_image_sha="${package_image_sha:-unknown}"
     podman build \
       --build-arg PACKAGE_IMAGE_REF="$package_image" \
       --build-arg IMAGE_NAME="{{ image }}" \

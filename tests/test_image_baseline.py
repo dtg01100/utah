@@ -264,7 +264,10 @@ class DakotaSbomTests(unittest.TestCase):
             "gnome-initial-setup\t51.0", self.dakota())
 
     def test_an_element_without_name_or_version_still_lands(self):
-        self.assertIn("base.bst\t\t\n", self.dakota())
+        # Empty trailing columns are stripped rather than written as trailing
+        # tabs, which the trailing-whitespace pre-commit hook would re-flip.
+        self.assertIn("\nbase.bst\n", self.dakota())
+        self.assertNotIn("\t\n", self.dakota())
 
     def test_the_file_is_sorted_and_carries_the_column_header(self):
         rows = self.dakota().splitlines()

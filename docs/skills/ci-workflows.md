@@ -91,6 +91,12 @@ the build before expensive compilation or container builds run:
   references across all workflow files are reported.
   Exercised by black-box tests in `tests/test_check_workflow_outputs.py`.
 
+The status page's relative-time behavior test freezes `Date.now()` to the same
+instant used to construct its input timestamps. A real clock can advance by
+half a second while a runner is descheduled, changing the exact `30s ago`
+assertion to `31s ago`. Keep all duration-unit assertions exact; fix the fixture
+clock rather than weakening expectations or changing the page's business logic.
+
 The same job resolves the flavor set and splits it in two by what each
 flavor builds on -- `main` on the pristine Hummingbird base, the rest on the
 kernel cache image -- emitting `main_flavors`, `kernel_flavors`, and
