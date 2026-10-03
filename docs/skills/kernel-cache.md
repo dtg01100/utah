@@ -162,7 +162,6 @@ the parameter must be exposed, but that alone does not prove resume works.
 For a failed previous boot, inspect `journalctl -b -1 -k` after recovery for
 GSP/Xid errors; do not equate similar log signatures with a proven cause.
 
-
 ## Verification
 
 The OGC kernel must satisfy the live ISO and installed-root contract, not only
