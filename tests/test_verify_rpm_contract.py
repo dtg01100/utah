@@ -681,7 +681,12 @@ class NvidiaImageAssertionTests(unittest.TestCase):
         argv = ["verify-rpm-contract.py", str(self.manifest), str(self.overlay)]
         stdout, stderr = io.StringIO(), io.StringIO()
         report_dir = Path(tempfile.mkdtemp())
+        # /etc/yum.repos.d is real on Fedora hosts. The nvidia flavor
+        # tests don't care about it, so redirect it to a guaranteed-empty
+        # temp directory (#454 on-image scan).
+        runtime_repos = Path(tempfile.mkdtemp())
         with patch.object(self.module, "Path", redirected), \
+                patch.object(self.module, "RUNTIME_REPOS_DIR", runtime_repos), \
                 patch.object(self.module, "is_installed", return_value=True), \
                 patch.object(self.module.subprocess, "run", fake_run), \
                 patch.object(sys, "argv", argv), \
