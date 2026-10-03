@@ -33,10 +33,10 @@
 #
 #   The factory is already building several of them for Hummingbird --
 #   intel-gmmlib, intel-mediasdk, intel-vpl-gpu-rt, libheif and libva all built
-#   in projectbluefin/hummingbird-github. Utah already consumes the Intel
-#   media runtimes (intel-gmmlib, libva-intel-media-driver) via [parity]
-#   through #397; intel-mediasdk and intel-vpl-gpu-rt follow the same path.
-#   When the rest of the overlay is published and enabled here, it becomes
+#   in projectbluefin/hummingbird-github. Consuming the Intel media runtimes
+#   (intel-gmmlib, libva-intel-media-driver) via [parity] is pending on #397,
+#   which also carries intel-mediasdk and intel-vpl-gpu-rt; none of them is
+#   requested here yet. When the overlay is published and enabled here, it becomes
 #   the source that negativo17 is for Bluefin, and these can move into the
 #   contract as a version assertion rather than a name one.
 
