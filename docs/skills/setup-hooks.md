@@ -1,7 +1,7 @@
 ---
 name: setup-hooks
 version: "1.0"
-last_updated: "2026-09-30"
+last_updated: "2026-10-03"
 id: setup-hooks
 one_line_purpose: Change a first-boot setup hook without breaking the once-only contract.
 entry_point: docs/skills/setup-hooks.md
@@ -99,7 +99,7 @@ use.
 | `10-tailscale.sh` | Set a non-root pkexec caller as the Tailscale operator. Missing Tailscale or an invalid/root caller defers without stamping; a failed grant retries with the read-only API. |
 | `11-framework-ucsi-workaround.sh` | Append the `usbcore.autosuspend=-1` karg on Intel-Core-Ultra Frameworks. Wrong hardware or an already-applied karg commits a deliberate skip; missing DMI or rpm-ostree retries. |
 | `20-home-labels.sh` | Relabel `/var/home` once on systems installed before #261, repairing a mis-keyed active `file_contexts.homedirs` first (#474). |
-| `99-flatpaks.sh` | Remove stale Bluefin Firefox preferences and copy optional defaults. Version 2 reruns machines that stamped version 1 while the quoted removal glob was a no-op (#489). Successful copies and deliberate absence/architecture skips commit; body failures retry with the read-only API. |
+| `99-flatpaks.sh` | Remove stale Bluefin Firefox preferences and copy optional defaults. Version 2 reruns machines that stamped version 1 while the quoted removal glob was a no-op (#489). Successful copies and deliberate absence/architecture skips commit; body failures retry with the read-only API. Common's `system_files/bluefin/` profile supplies `/usr/share/ublue-os/firefox-config/01-bluefin-global.js`; the image desktop contract requires the actual payload, not merely a Containerfile COPY line. Pinned by `contracts/bluefin-desktop.toml` (`[flatpak].files`). |
 
 `05-bootupctl-adopt.sh` is the canonical example of a transient-skip body:
 each guard (`command -v bootupctl`, the live-session check) exits without

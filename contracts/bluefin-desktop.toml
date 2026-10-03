@@ -97,6 +97,11 @@ files = [
   "/usr/share/flatpak/preinstall.d/bazaar.preinstall",
   "/usr/share/ublue-os/privileged-setup.hooks.d/99-flatpaks.sh",
   "/usr/share/ublue-os/homebrew/system-flatpaks.Brewfile",
+  # Common's `system_files/bluefin/` profile supplies the Firefox preference
+  # file the `99-flatpaks.sh` hook copies at first boot; assert the actual
+  # payload rather than the COPY line so a missing Common payload fails
+  # image verification. See issue #488.
+  "/usr/share/ublue-os/firefox-config/01-bluefin-global.js",
 ]
 brewfile = "/usr/share/ublue-os/homebrew/system-flatpaks.Brewfile"
 remote = "/etc/flatpak/remotes.d/flathub.flatpakrepo"
