@@ -22,8 +22,8 @@ metadata:
 
 # CI Workflows
 
-Four workflows, all thin callers into `projectbluefin/actions@v1` reusables
-or pinned third-party actions:
+This overview covers the build, promotion, branch-sync, parity-sync, and
+post-build verification workflows, not the complete workflow inventory:
 
 - `.github/workflows/build.yml` -- pull requests, pushes to `testing`, a
   manual dispatch. Top-level `permissions: {}`; each job
