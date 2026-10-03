@@ -21,10 +21,13 @@ PARAMETER = "NVreg_DynamicPowerManagement"
 
 
 class NvidiaPmModprobeTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.modprobe = shutil.which("modprobe")
+        if cls.modprobe is None:
+            raise unittest.SkipTest("kmod's modprobe is not installed")
+
     def setUp(self):
-        self.modprobe = shutil.which("modprobe")
-        if self.modprobe is None:
-            self.fail("kmod's modprobe is required for runtime-PM consumer tests")
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.root = Path(tmp.name)

@@ -53,15 +53,20 @@ The TOML's sections are the contract's table of contents:
   flavor pattern `(main|nvidia|gaming|nvidia-gaming)` and the matching
   `ostree-image-signed` ref pattern.
 - **`[configuration]`** — the dconf distro databases and locks under
-  `/etc/dconf/db/distro.d/` must exist, plus the GDM keyfile under
+  `/etc/dconf/db/distro.d/` must exist, the GDM keyfile under
   `/etc/dconf/db/gdm.d/01-bluefin-gdm-logo` that overrides
-  `org.gnome.login-screen.logo` to point at the Bluefin mark; otherwise
-  gnome-shell falls back to `fedora-logos`' Fedora wordmark at the greeter
-  (#378). `file_contains` pins the live configuration: the gschema override
-  references Bazaar and the Bluefin background path, the custom command menu
-  points at `docs.projectbluefin.io`, the keybindings set
-  `xdg-terminal-exec`, the GDM keyfile declares the login-screen schema and
-  the Bluefin asset path.
+  `org.gnome.login-screen.logo` to point at the Bluefin mark (otherwise
+  gnome-shell falls back to `fedora-logos`' Fedora wordmark at the greeter,
+  #378), and the nvidia modprobe.d drop-in shipped as
+  `/usr/lib/modprobe.d/zz-nvidia-pm.conf` that carries
+  `NVreg_DynamicPowerManagement=0x01` (candidate mitigation for the GSP
+  unload failure in #492; hardware efficacy is a separate gate). The
+  verifier's `file_contains` pin covers: the gschema override references
+  Bazaar and the Bluefin background path, the custom command menu points
+  at `docs.projectbluefin.io`, the keybindings set `xdg-terminal-exec`,
+  the GDM keyfile declares the login-screen schema and the Bluefin asset
+  path, and the modprobe.d drop-in declares `options nvidia
+  NVreg_DynamicPowerManagement=0x01` exactly.
 - **`[flatpak]`** — first-boot policy: the Flathub remote
   (`https://dl.flathub.org/repo/`), the Bazaar preinstall, the
   `99-flatpaks.sh` privileged-setup hook, and the system-flatpaks Brewfile
