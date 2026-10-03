@@ -75,8 +75,15 @@ verify step asserts *that file*, so the two cannot disagree. The unavailable
 row is not limited to the copied contract: it also holds image-level parity
 gaps — names Bluefin's published image ships from a build file outside
 `base.toml`, recorded in `baselines/bluefin/rpms.tsv` and triaged in
-`baselines/triage.toml` (`nvtop` is the current example). These counts are
-generated from `packages/bluefin.toml` and `packages/utah.toml`
+`baselines/triage.toml` (`nvtop` is the current example). The runtime
+repository allowlist is asserted both by `--check` against the `.repo` files
+in `packages/` before composition and by the on-image verifier against the
+composed image's dnf5 default `reposdir` paths (`/etc/yum.repos.d`,
+`/etc/distro.repos.d`, `/usr/share/dnf5/repos.d`), so a `.repo` file the base
+image ships in any of those directories is held to the same allowlist. The
+verify step retains the resolved origin/NEVRA set with build provenance as
+`/usr/share/utah/package-origins.json` and `package-origins.txt`. These counts
+are generated from `packages/bluefin.toml` and `packages/utah.toml`
 (`scripts/generate-site-data.py`, `site/data/packages.json`); `just check`
 fails if this table drifts from that output (`scripts/check-doc-counts.py`).
 
