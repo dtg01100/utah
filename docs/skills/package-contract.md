@@ -238,8 +238,12 @@ paths (applications, autostarts, sessions, systemd units, `/usr/bin`,
 `*.js`, because `99-flatpaks.sh` copies the whole directory: a narrower
 pattern would let a non-`.js` file ship unseen. Adding a path means
 adding a glob AND a `KINDS` entry so `write_report()` can classify the
-new rows; the contract is pinned by
-`tests/test_image_baseline.py::SurfaceGlobsTests`.
+new rows. `GapTests` in `tests/test_image_baseline.py` exercises missing
+Firefox defaults in the report and recognizes an unowned overlay as shipped.
+For extraction proof, run `extract IMAGE /tmp/surface-check` against a real
+image and inspect the Firefox rows and asset contents; source-string checks
+cannot establish shipping. Never append rows measured from a newer image to
+an older snapshot: `image.txt` must describe the same image as both TSVs.
 
 `scripts/audit-bluefin-parity.py` is the re-runnable version of that
 pipeline. Every name Bluefin ships that Utah does not install (and does

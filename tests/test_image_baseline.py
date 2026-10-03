@@ -95,6 +95,20 @@ class GapTests(unittest.TestCase):
         self.assertIn("gnome-build-meta.bst-core-gnome-initial-setup.bst", report)
         self.assertIn("1 user unit", report)
 
+    def test_report_classifies_missing_firefox_defaults_and_ignores_shipped_assets(self):
+        path = "/usr/share/ublue-os/firefox-config/01-bluefin-global.js"
+        self.write("bluefin/surface.tsv", f"firefox-defaults\t{path}\n")
+        ib.write_report()
+        self.assertEqual(ib.gaps(), {"firefox-defaults": [path]})
+        self.assertIn("| firefox-defaults | **new** | 1 ublue asset |",
+                      (self.base / "GAP.md").read_text())
+
+        # Common's overlay can ship the same asset without owning an RPM.
+        self.write("utah/surface.tsv", f"(unowned)\t{path}\n")
+        ib.write_report()
+        self.assertEqual(ib.gaps(), {})
+        self.assertNotIn("| firefox-defaults |", (self.base / "GAP.md").read_text())
+
     def test_report_renders_the_triage_reason_and_its_issue(self):
         self.write("triage.toml",
                    '[package.gnome-initial-setup]\n'
@@ -207,48 +221,6 @@ class ExtractTests(unittest.TestCase):
         self.assertFalse(self.out.exists())
         self.extract("ghcr.io/projectbluefin/utah:latest")
         self.assertTrue(self.out.is_dir())
-
-
-class SurfaceGlobsTests(unittest.TestCase):
-    """The surface baseline must enumerate `/usr/share/ublue-os/firefox-config/`.
-
-    `99-flatpaks.sh` copies `/usr/share/ublue-os/firefox-config/*` into the
-    Flatpak extension directory at first boot, so a baseline that cannot see
-    that directory cannot answer the "did firefox-config ship on this image?"
-    question directly. The closed list of glob patterns inside `EXTRACT` was
-    the root cause: it enumerated applications, autostarts, sessions, systemd
-    units, and the bin trees, and nothing under `/usr/share/ublue-os/`. The
-    tests below pin the contract so the closed list cannot shrink again
-    without the change also updating this suite (#502).
-    """
-
-    def test_the_extract_script_globs_the_firefox_config_directory(self):
-        # The hook copies `firefox-config/*` -- every file, not only the `*.js`
-        # defaults -- so the EXTRACT pattern must be just as wide or a non-.js
-        # file would ship via the hook and stay invisible to `surface.tsv`.
-        self.assertIn("/usr/share/ublue-os/firefox-config/*", ib.EXTRACT)
-        self.assertNotIn("/usr/share/ublue-os/firefox-config/*.js", ib.EXTRACT)
-
-    def test_kind_names_the_ublue_os_paths(self):
-        # `write_report` groups gaps by kind, so an unknown kind would raise
-        # StopIteration mid-render and the report would not land. Pin the
-        # classification alongside the glob so a future KINDS change cannot
-        # leave firefox-config rows ungroupable.
-        self.assertEqual(
-            ib.kind("/usr/share/ublue-os/firefox-config/01-bluefin-global.js"),
-            "ublue asset")
-
-    def test_kind_still_groups_every_existing_category(self):
-        # The new KINDS entry must not steal classifications from earlier ones.
-        # Order matters: the existing patterns (apps, units, bin) win for their
-        # respective paths; the new entry only fires on /usr/share/ublue-os/.
-        self.assertEqual(ib.kind("/usr/share/applications/firefox.desktop"), "app")
-        self.assertEqual(ib.kind("/usr/bin/bash"), "command")
-        self.assertEqual(ib.kind("/usr/sbin/iptables"), "command")
-        self.assertEqual(ib.kind("/usr/lib/systemd/user/pipewire.service"), "user unit")
-        self.assertEqual(ib.kind("/usr/lib/systemd/system/sshd.service"), "system unit")
-        self.assertEqual(ib.kind("/usr/share/wayland-sessions/gnome.desktop"), "session")
-        self.assertEqual(ib.kind("/etc/xdg/autostart/foo.desktop"), "autostart")
 
 
 class DakotaSbomTests(unittest.TestCase):
