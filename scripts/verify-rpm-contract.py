@@ -4,12 +4,13 @@
 Beyond package presence, this is the supply-chain attestation for issue #21:
 GNOME packages carry the promised major version and an approved factory
 (`.bfin`) or Hummingbird (`.hum`) identity; parity packages cannot silently
-resolve from an unapproved Fedora repository; and the resolved
+resolve from an unapproved Fedora repository; the composed image exposes only
+the runtime repositories the manifest allows; and the resolved
 package-origin/NEVRA set is retained as a report with build provenance.
 
-`--check` additionally validates the manifest itself off-image: the `.repo`
-files in `packages/` may name only the repositories the manifest allows. It
-does not scan a built image's `/etc/yum.repos.d`.
+`--check` validates the manifest itself off-image: the `.repo` files in
+`packages/` may name only the repositories the manifest allows. The on-image
+run applies the same allowlist to the composed image's `/etc/yum.repos.d`.
 
 Mirrors assert_packages_present from projectbluefin/bluefin's
 build_files/shared/package-lib.sh: name every missing package, once.

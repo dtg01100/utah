@@ -171,7 +171,15 @@ install-set check it attests the supply chain the image is composed from
   changes that file's section id or baseurl without Utah shipping a matching
   override, the build fails with the intended trip-wire message from
   `check_repo_sections`. Operators updating the base pin must keep this coupling
-  intact.
+  intact. The base digest currently pinned at `Containerfile` L1 was inspected:
+  it ships only `hummingbird.repo` under `/etc/yum.repos.d`, with a
+  `[public-hummingbird-$basearch-rpms]` section and a disabled source section,
+  and Utah's runtime COPY replaces that file with its explicit x86_64 pin. A
+  renamed or newly inherited enabled repository must fail the gate; do not
+  delete inherited files to make it pass. Each new base pin requires fresh
+  inventory and a real composed-image verification. The scan covers
+  `/etc/yum.repos.d` only; dnf5's other default `reposdir` entries
+  (`/etc/distro.repos.d`, `/usr/share/dnf5/repos.d`) are out of scope for #454.
 - **Build provenance** (`generate_provenance_report`) — the resolved
   package-origin/NEVRA data is written as JSON plus a human-readable report to
   `$UTAH_REPORT_DIR` (default `/usr/share/utah`), retaining the image flavor,
