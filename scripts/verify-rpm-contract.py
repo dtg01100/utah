@@ -61,7 +61,7 @@ FACTORY_REPO_PATH = "/etc/yum.repos.d/utah-packages.repo"
 # packages, so scanning only /etc/yum.repos.d left a repo file the base ships
 # in another default reposdir enabled at runtime yet invisible to the gate
 # (#513). A base image can also override this default via `reposdir=` in
-# /etc/dnf/dnf.conf or /etc/dnf/libdnf5.conf.d/*.conf, which replaces the
+# /etc/dnf/dnf.conf or a libdnf5 drop-in (see dnf5_config_files), which replaces the
 # default list (#536): a config that sets reposdir to one custom path bypasses
 # the allowlist if this script only scans the hardcoded defaults.
 DEFAULT_REPOS_DIRS: tuple[Path, ...] = (
@@ -69,11 +69,12 @@ DEFAULT_REPOS_DIRS: tuple[Path, ...] = (
     Path("/etc/distro.repos.d"),
     Path("/usr/share/dnf5/repos.d"),
 )
-# Where dnf5 looks for its [main] configuration. dnf5 loads
-# /usr/share/dnf5/libdnf.conf.d/*.conf, then /etc/dnf/libdnf5.conf.d/*.conf,
-# then /etc/dnf/dnf.conf; options from later files override earlier ones.
-# repo_pin_errors reads `reposdir=` from the same files, so the on-image scan
-# honours the actual list dnf5 uses at runtime.
+# Where dnf5 looks for its [main] configuration: the drop-ins in
+# /etc/dnf/libdnf5.conf.d and /usr/share/dnf5/libdnf.conf.d (merged by file
+# name, /etc masking /usr/share, applied in file-name order), then
+# /etc/dnf/dnf.conf; options from later files override earlier ones.
+# runtime_reposdir_paths reads `reposdir=` from the same files, so the on-image
+# scan honours the actual list dnf5 uses at runtime.
 DNF_DISTRO_CONF_D = Path("/usr/share/dnf5/libdnf.conf.d")
 DNF_USER_CONF_D = Path("/etc/dnf/libdnf5.conf.d")
 DNF_MAIN_CONF = Path("/etc/dnf/dnf.conf")
@@ -97,17 +98,21 @@ def section(overlay: Path, name: str, key: str = "packages") -> list[str]:
 def dnf5_config_files() -> list[Path]:
     """The dnf5 [main] config files in load order (later wins).
 
-    dnf5 loads /usr/share/dnf5/libdnf.conf.d/*.conf, then
-    /etc/dnf/libdnf5.conf.d/*.conf, then /etc/dnf/dnf.conf; options from later
-    files override earlier ones. The user drop-in dir masks a distribution file
-    of the same name; that is moot here because `reposdir=` only sets one
-    option per file and later files overwrite it anyway.
+    Mirrors libdnf5 Base::load_config: the drop-in dirs
+    /etc/dnf/libdnf5.conf.d and /usr/share/dnf5/libdnf.conf.d are merged by
+    file name, a file in /etc masking a same-named file in /usr/share, and the
+    union is applied sorted by file name (not by directory). /etc/dnf/dnf.conf
+    is applied last. Getting this order wrong would let the gate resolve a
+    different `reposdir=` than dnf5 does (#536).
     """
-    paths: list[Path] = []
-    if DNF_DISTRO_CONF_D.is_dir():
-        paths.extend(sorted(p for p in DNF_DISTRO_CONF_D.glob("*.conf") if p.is_file()))
-    if DNF_USER_CONF_D.is_dir():
-        paths.extend(sorted(p for p in DNF_USER_CONF_D.glob("*.conf") if p.is_file()))
+    by_name: dict[str, Path] = {}
+    for conf_dir in (DNF_USER_CONF_D, DNF_DISTRO_CONF_D):
+        if not conf_dir.is_dir():
+            continue
+        for p in sorted(conf_dir.glob("*.conf")):
+            if p.is_file() and p.name not in by_name:
+                by_name[p.name] = p
+    paths = [by_name[name] for name in sorted(by_name)]
     paths.append(DNF_MAIN_CONF)
     return paths
 
@@ -833,8 +838,8 @@ def main() -> int:
     # stage's fedora-44.repo is never copied into this layer (Containerfile, v4l2
     # stage). The scanned dirs are derived from dnf5's actual configuration
     # rather than the three documented defaults (#513, #536): a base image can
-    # override the list with `reposdir=` in /etc/dnf/dnf.conf or
-    # /etc/dnf/libdnf5.conf.d/*.conf, in which case the hardcoded list misses
+    # override the list with `reposdir=` in /etc/dnf/dnf.conf or a libdnf5
+    # drop-in (see dnf5_config_files), in which case the hardcoded list misses
     # the configured paths and a `.repo` file placed there bypasses the
     # allowlist.
     repo_errors: list[str] = []

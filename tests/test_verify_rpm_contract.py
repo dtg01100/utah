@@ -1185,8 +1185,8 @@ class SupplyChainTests(unittest.TestCase):
 class Dnf5ConfigTests(unittest.TestCase):
     """The on-image reposdir scan reads dnf5's [main] config rather than hardcoding.
 
-    A `reposdir=` setting in /etc/dnf/dnf.conf or any file under
-    /etc/dnf/libdnf5.conf.d/ replaces the documented default
+    A `reposdir=` setting in /etc/dnf/dnf.conf or any drop-in under
+    /etc/dnf/libdnf5.conf.d/ or /usr/share/dnf5/libdnf.conf.d/ replaces the documented default
     (`/etc/yum.repos.d`, `/etc/distro.repos.d`, `/usr/share/dnf5/repos.d`).
     The hardcoded list misses the configured paths (#536), so the scan reads
     every config in load order and uses the last-set value. A config that
@@ -1296,6 +1296,45 @@ class Dnf5ConfigTests(unittest.TestCase):
                     patch.object(self.module, "DNF_MAIN_CONF", main_conf):
                 paths = self.module.runtime_reposdir_paths()
         self.assertEqual(paths, [Path("/opt/runtime-repos")])
+
+    def _patched_dirs(self, distro: Path, user: Path, main_conf: Path):
+        return (
+            patch.object(self.module, "DNF_DISTRO_CONF_D", distro),
+            patch.object(self.module, "DNF_USER_CONF_D", user),
+            patch.object(self.module, "DNF_MAIN_CONF", main_conf),
+        )
+
+    def test_drop_ins_apply_in_file_name_order_across_dirs(self) -> None:
+        """libdnf5 sorts the drop-in union by file name, not by directory."""
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            distro = directory / "distro"
+            user = directory / "user"
+            self._write_conf(distro, "zz.conf", "[main]\nreposdir = /opt/distro-zz\n")
+            self._write_conf(user, "aa.conf", "[main]\nreposdir = /opt/user-aa\n")
+            main_conf = directory / "dnf.conf"
+            p1, p2, p3 = self._patched_dirs(distro, user, main_conf)
+            with p1, p2, p3:
+                files = self.module.dnf5_config_files()
+                paths = self.module.runtime_reposdir_paths()
+        self.assertEqual(files, [user / "aa.conf", distro / "zz.conf", main_conf])
+        self.assertEqual(paths, [Path("/opt/distro-zz")])
+
+    def test_user_drop_in_masks_same_named_distro_drop_in(self) -> None:
+        """A same-named /etc drop-in masks the /usr/share one entirely."""
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            distro = directory / "distro"
+            user = directory / "user"
+            self._write_conf(distro, "aa.conf", "[main]\nreposdir = /opt/distro-aa\n")
+            self._write_conf(user, "aa.conf", "[main]\n")
+            main_conf = directory / "dnf.conf"
+            p1, p2, p3 = self._patched_dirs(distro, user, main_conf)
+            with p1, p2, p3:
+                files = self.module.dnf5_config_files()
+                paths = self.module.runtime_reposdir_paths()
+        self.assertEqual(files, [user / "aa.conf", main_conf])
+        self.assertEqual(paths, list(self.module.DEFAULT_REPOS_DIRS))
 
     def test_runtime_reposdir_paths_falls_back_to_defaults(self) -> None:
         """No `reposdir=` set anywhere means the documented default applies."""

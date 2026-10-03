@@ -128,13 +128,18 @@ image.
 
 The allowlist also runs **on-image**, against the composed image's runtime RPM
 repositories, not just the source files in `packages/`. `verify-rpm-contract.py`
-scans every path dnf5 reads at runtime, not a hardcoded list of defaults
-(#454, #513, #536):
+scans every `reposdir` dnf5 resolves at runtime, not a hardcoded list of
+defaults (#454, #513, #536). Repository override directories
+(`/etc/dnf/repos.override.d`) are not covered here; they are tracked
+separately (#527).
 
-- The `reposdir=` option in `/etc/dnf/dnf.conf` or `/etc/dnf/libdnf5.conf.d/*.conf`
-  replaces the documented default list. The gate parses every `[main]` config
-  dnf5 loads and uses the last-set value if any, so a custom reposdir the
-  base image configures is scanned instead of the three defaults (#536).
+- The `reposdir=` option in `/usr/share/dnf5/libdnf.conf.d/*.conf`,
+  `/etc/dnf/libdnf5.conf.d/*.conf`, or `/etc/dnf/dnf.conf` replaces the
+  documented default list. The gate loads these `[main]` configs in dnf5's
+  order — drop-ins merged by file name (an `/etc` file masks a same-named
+  `/usr/share` file) and applied sorted by file name, then `dnf.conf` — and
+  uses the last-set value if any, so a custom reposdir the base image
+  configures is scanned instead of the three defaults (#536).
 - Without `reposdir=` configured, the gate falls back to dnf5's documented
   defaults — `/etc/yum.repos.d`, `/etc/distro.repos.d`,
   `/usr/share/dnf5/repos.d` — so a `.repo` file the base ships anywhere in
