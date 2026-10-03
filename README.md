@@ -77,7 +77,8 @@ major version and an approved factory (`.bfin`) or Hummingbird (`.hum`) release
 identity, and that parity packages resolved from the repository that is
 supposed to supply them. The runtime repository allowlist is asserted both by
 `--check` against the `.repo` files in `packages/` before composition and by
-the on-image verifier against the composed image's repository configuration.
+the on-image verifier against the composed image's `/etc/yum.repos.d`, so
+repository files shipped by the base image are held to the same allowlist.
 The verify step retains the resolved origin/NEVRA set with build provenance as
 `/usr/share/utah/package-origins.json` and `package-origins.txt`. The unavailable
 row also holds image-level parity gaps: names Bluefin's published image ships
