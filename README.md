@@ -27,11 +27,7 @@ issues](https://github.com/projectbluefin/utah/issues) is the whole point.
 
 ## What it is
 
-[Bluefin](https://projectbluefin.io) built on [Fedora
-Hummingbird](https://packages.redhat.com), which supplies a hardened, fast-moving
-bootable base and no desktop at all. Utah adds the desktop: Bluefin's package
-contract on top, and the GNOME 51 stack built from source because neither
-Hummingbird nor a Fedora release ships it.
+[Bluefin](https://projectbluefin.io) built on [Fedora Hummingbird](https://packages.redhat.com) ([announcement](https://fedoramagazine.org/fedora-hummingbird-linux-taking-the-hummingbird-model-to-the-full-os/)), which supplies a hardened, fast-moving bootable base and no desktop at all. Utah adds the desktop: Bluefin's package contract on top, and the GNOME 51 stack built from source because neither Hummingbird nor a Fedora release ships it.
 
 <img src="https://github.com/user-attachments/assets/962af585-6e2a-4038-ac14-8e54a3189420" alt="alt" width="40%">
 
@@ -41,6 +37,26 @@ Two repositories, the way `common` and `brew` already work:
 |---|---|
 | [`projectbluefin/utah`](https://github.com/projectbluefin/utah) | This one. Composes the image. |
 | [`projectbluefin/utah-packages`](https://github.com/projectbluefin/utah-packages) | Builds GNOME 51 and the rest of the desktop stack from verified upstream sources, and publishes them as an OCI image. |
+
+## Download
+
+**No Utah image or ISO is published yet.** Nothing here is ready to run on a
+machine you care about, and no download URL is intentionally offered — see
+[Known gaps](#known-gaps) for what is and is not built. Track the publication
+gate in the
+[`enhancement`/`iso` labels on the issue tracker](https://github.com/projectbluefin/utah/issues?q=is%3Aissue+label%3Aiso+OR+label%3Aenhancement+sort%3Aupdated-desc);
+the first published artifact will be linked from here and from the [Utah
+docs page](https://docs.projectbluefin.io/utah) at the same time.
+
+## Documentation
+
+The user-facing Utah docs page at
+[docs.projectbluefin.io/utah](https://docs.projectbluefin.io/utah) renders
+this README at every build and is the canonical home for the live
+`DriverVersionsCatalog` (kernel, Mesa, NVIDIA, GNOME versions, provenance
+and update date, image switch commands, reboot guidance). Edit
+[`README.md`](README.md) — not the docs wrapper — and the catalog stays
+honest because it is generated, not hand-maintained.
 
 ## Image streams
 
