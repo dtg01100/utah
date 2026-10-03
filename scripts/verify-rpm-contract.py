@@ -127,6 +127,11 @@ _IDENTITY_BASEARCHES: frozenset[str] = frozenset(
     {"x86_64", "aarch64", "ppc64le", "s390x", "riscv64"}
 )
 _DNF_VAR_RE = re.compile(r"\$(?:\{(?P<braced>\w+)\}|(?P<bare>\w+))")
+# libdnf5 also accepts `${var:-default}` and `${var:+alt}`; raise on any
+# braced form whose body is not `\w+` so the gate does not silently scan
+# the literal `${...}` substring dnf5 would have resolved differently
+# (#540 review).
+_DNF_VAR_UNKNOWN_RE = re.compile(r"\$\{(?P<body>[^}]*)\}")
 
 
 def _substitute_dnf_vars(value: str, path: Path) -> str:
@@ -147,6 +152,18 @@ def _substitute_dnf_vars(value: str, path: Path) -> str:
                 f"dnf5 config {path} sets reposdir with unresolvable variable ${name}"
             )
         return known[name]
+
+    # Reject `${var:-default}` / `${var:+alt}` (and any other non-identifier
+    # braced body) up front so the substitution below never passes a literal
+    # `${...}` substring through unchanged when libdnf5 would have expanded
+    # it via its own default/alternate-value rules.
+    for unknown in _DNF_VAR_UNKNOWN_RE.finditer(value):
+        body = unknown.group("body")
+        if not re.fullmatch(r"\w+", body):
+            raise Dnf5ConfigError(
+                f"dnf5 config {path} sets reposdir with unresolvable "
+                f"variable ${{{body}}}"
+            )
 
     return _DNF_VAR_RE.sub(repl, value)
 
@@ -172,7 +189,18 @@ def parse_reposdir_from_config(config_files: list[Path]) -> list[Path] | None:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError as err:
             raise Dnf5ConfigError(f"could not read dnf5 config {path}: {err}") from err
-        parser = configparser.ConfigParser(interpolation=None, strict=False)
+        # libdnf5 is case-sensitive on option keys and accepts only `=` as
+        # the delimiter (`reposdir` ≠ `Reposdir:`). configparser defaults to
+        # a case-insensitive `optionxform=str.lower` and treats `:` as a
+        # delimiter, so `Reposdir:` would be honoured here but ignored at
+        # runtime; pin the same case sensitivity and delimiter set libdnf5
+        # uses so the gate reads what dnf5 reads (#540 review).
+        parser = configparser.ConfigParser(
+            interpolation=None,
+            strict=False,
+            delimiters=("=",),
+        )
+        parser.optionxform = str
         try:
             parser.read_string(text, source=str(path))
         except configparser.Error as err:

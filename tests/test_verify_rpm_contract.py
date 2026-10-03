@@ -1314,6 +1314,30 @@ class Dnf5ConfigTests(unittest.TestCase):
             with self.assertRaises(self.module.Dnf5ConfigError):
                 self.module.parse_reposdir_from_config([path])
 
+    def test_parse_reposdir_fails_closed_on_default_value_substitution(self) -> None:
+        """libdnf5's `${var:-default}` form must not pass through as a literal path."""
+        body = "[main]\nreposdir=/etc/repos-${releasever:-44}\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_conf(Path(tmp), "dnf.conf", body)
+            with self.assertRaises(self.module.Dnf5ConfigError):
+                self.module.parse_reposdir_from_config([path])
+
+    def test_parse_reposdir_fails_closed_on_alternate_value_substitution(self) -> None:
+        """libdnf5's `${var:+alt}` form must not pass through as a literal path."""
+        body = "[main]\nreposdir=/etc/repos-${releasever:+raw}\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_conf(Path(tmp), "dnf.conf", body)
+            with self.assertRaises(self.module.Dnf5ConfigError):
+                self.module.parse_reposdir_from_config([path])
+
+    def test_parse_reposdir_is_case_sensitive_on_option_keys(self) -> None:
+        """libdnf5 ignores `Reposdir:`; the gate must reject the file's colon-delimited form."""
+        body = "[main]\nReposdir: /opt/custom\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_conf(Path(tmp), "dnf.conf", body)
+            with self.assertRaises(self.module.Dnf5ConfigError):
+                self.module.parse_reposdir_from_config([path])
+
     def test_parse_reposdir_returns_none_for_a_missing_file(self) -> None:
         """A nonexistent path in the input list is skipped."""
         self.assertIsNone(self.module.parse_reposdir_from_config([Path("/nonexistent.conf")]))
