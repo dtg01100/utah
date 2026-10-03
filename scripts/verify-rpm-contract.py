@@ -435,7 +435,7 @@ def verify_repository_policy(
             continue
         errors.extend(
             check_repo_sections(
-                parser, repo_file.name, allowed_repos,
+                parser, str(repo_file), allowed_repos,
                 expected_baseurls=expected_baseurls,
             )
         )
