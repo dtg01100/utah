@@ -1,6 +1,6 @@
 ---
 name: containerfile
-version: "1.0"
+version: "1.1"
 last_updated: "2026-10-02"
 id: containerfile
 one_line_purpose: Edit the Containerfile without regressing layer count or cache hits.
@@ -143,7 +143,18 @@ pushed once.
 Hummingbird symlinks `/usr/local` to `../var/usrlocal`, and `clean-stage` drops
 `/var` seed content during composition. Utah image helpers belong in immutable
 `/usr/libexec` so they survive cleanup and remain available at runtime, while
-preserving `/usr/local` for writable host administrator software.
+preserving `/usr/local` for writable host administrator software. Two helpers
+are read after the build and were unreachable at the old path:
+`utah-image-repo` (`ujust report`) and `utah-verify-gnome-extensions`
+(`just check-desktop-contract`). The accepted cost is that the build-only
+helpers persist in every published image too; they are root-only under a
+read-only `/usr`, and the Containerfile comment above the rename loop records
+the trade and what to do if it stops holding.
+
+`Containerfile.kernel` is the exception: its helpers are copied into a builder
+stage whose tree is discarded, so they keep using `/usr/local/libexec`. Leave
+that file alone -- `scripts/kernel-cache-tag.sh` hashes it whole, and any edit
+costs a ~45-minute kernel-cache rebuild for no runtime effect.
 
 All of Utah's scripts arrive in one COPY, staged under `/tmp/utah-scripts/`
 because a multi-source COPY cannot rename, and installed by name into

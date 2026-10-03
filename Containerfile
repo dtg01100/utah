@@ -122,6 +122,24 @@ ARG GENERIC_LOGOS_SHA256=2f9247f480788ef5cea4bc9f872bc5653ae0578fb7bec045f8b807c
 # Common's recipes silently shadowed ours, so every override reverted
 # (issue #449). The `just` >= 1.56 floor is enforced by
 # tests/test_ujust_overrides.py.
+#
+# The helpers install into `/usr/libexec`, not `/usr/local/libexec`. On the
+# Hummingbird base `/usr/local` is a symlink to `../var/usrlocal`, so anything
+# written there is erased by `utah-clean-stage` (it clears `/var/*`). Two
+# helpers are read after the build and were therefore dead on arrival at the
+# old path: `utah-image-repo`, which `ujust report` invokes at runtime
+# (`system_files/.../60-custom.just`), and `utah-verify-gnome-extensions`,
+# which `just check-desktop-contract` runs inside a composed image.
+#
+# Consequence, accepted deliberately: the whole `utah-*` set now persists in
+# every published image rather than only those two -- including
+# `utah-clean-stage` (`rm -fr /var/*`), `utah-configure-services` (the
+# `ENABLE_SSHD` toggle) and the installers. They are root-only and `/usr` is
+# read-only on a bootc host, so this is footgun surface, not a privilege
+# boundary; the alternative is a split install prefix whose per-script
+# classification would have to be maintained by hand. If that trade ever stops
+# holding, move the build-only entries back under a path `utah-clean-stage`
+# erases and keep only the two runtime helpers here.
 RUN --mount=type=bind,from=v4l2loopback,source=/out,target=/tmp/utah-v4l2loopback,ro \
     for pair in install-packages.py:utah-install-packages \
                 verify-rpm-contract.py:utah-verify-rpm-contract \

@@ -255,8 +255,7 @@ class ScriptBehaviourTests(unittest.TestCase):
         cases = {30: "30s ago", 300: "5m ago", 10800: "3h ago",
                  172800: "2d ago", 1814400: "3w ago"}
         script = """
-        const now = Date.parse("2026-10-02T12:00:00Z");
-        Date.now = () => now;
+        const now = Date.now();
         const at = (s) => new Date(now - s * 1000).toISOString();
         console.log(JSON.stringify(%s.map((s) => ago(at(s)))));
         """ % list(cases)
