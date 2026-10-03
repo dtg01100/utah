@@ -212,7 +212,7 @@ class ExtractTests(unittest.TestCase):
 class SurfaceGlobsTests(unittest.TestCase):
     """The surface baseline must enumerate `/usr/share/ublue-os/firefox-config/`.
 
-    `99-flatpaks.sh` copies `/usr/share/ublue-os/firefox-config/*.js` into the
+    `99-flatpaks.sh` copies `/usr/share/ublue-os/firefox-config/*` into the
     Flatpak extension directory at first boot, so a baseline that cannot see
     that directory cannot answer the "did firefox-config ship on this image?"
     question directly. The closed list of glob patterns inside `EXTRACT` was
@@ -223,9 +223,11 @@ class SurfaceGlobsTests(unittest.TestCase):
     """
 
     def test_the_extract_script_globs_the_firefox_config_directory(self):
-        # The hook copies `*.js` defaults; the EXTRACT pattern must catch them
-        # so `baselines/<image>/surface.tsv` records each shipped file.
-        self.assertIn("/usr/share/ublue-os/firefox-config/*.js", ib.EXTRACT)
+        # The hook copies `firefox-config/*` -- every file, not only the `*.js`
+        # defaults -- so the EXTRACT pattern must be just as wide or a non-.js
+        # file would ship via the hook and stay invisible to `surface.tsv`.
+        self.assertIn("/usr/share/ublue-os/firefox-config/*", ib.EXTRACT)
+        self.assertNotIn("/usr/share/ublue-os/firefox-config/*.js", ib.EXTRACT)
 
     def test_kind_names_the_ublue_os_paths(self):
         # `write_report` groups gaps by kind, so an unknown kind would raise

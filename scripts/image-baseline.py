@@ -10,7 +10,8 @@ here come from the published images instead:
   extract IMAGE DIR   rpm -qa, plus which package owns every user-visible file
                       (desktop entries, autostarts, sessions, systemd units,
                       /usr/bin, the Bluefin firefox-config defaults), from
-                      inside IMAGE. Needs podman.
+                      inside IMAGE. Needs podman. The committed snapshots only
+                      pick up a new glob on the next run of this command.
   dakota RUN DIR      element list from the SPDX SBOM that Dakota's publish
                       workflow uploads (artifact sbom-dakota). Dakota is built
                       with BuildStream, so it has no RPM database to read.
@@ -49,7 +50,7 @@ for pat in /usr/share/applications/*.desktop /etc/xdg/autostart/*.desktop \
            /usr/lib/systemd/system/*.service /usr/lib/systemd/system/*.socket \
            /usr/lib/systemd/system/*.timer /usr/lib/systemd/user/*.service \
            /usr/lib/systemd/user/*.socket /usr/bin/* /usr/sbin/* \
-           /usr/share/ublue-os/firefox-config/*.js; do
+           /usr/share/ublue-os/firefox-config/*; do
   for f in $pat; do
     [ -e "$f" ] || continue
     o=$(rpm -qf --qf '%{NAME}\n' "$f" 2>/dev/null | head -1) || o=""

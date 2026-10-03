@@ -234,7 +234,9 @@ then partition each gap name by which repository could supply it.
 The `EXTRACT` script inside that tool globs a closed list of user-visible
 paths (applications, autostarts, sessions, systemd units, `/usr/bin`,
 `/usr/sbin`) and the Bluefin firefox-config defaults
-(`/usr/share/ublue-os/firefox-config/*.js`, #502). Adding a path means
+(`/usr/share/ublue-os/firefox-config/*`, #502). The glob is `*`, not
+`*.js`, because `99-flatpaks.sh` copies the whole directory: a narrower
+pattern would let a non-`.js` file ship unseen. Adding a path means
 adding a glob AND a `KINDS` entry so `write_report()` can classify the
 new rows; the contract is pinned by
 `tests/test_image_baseline.py::SurfaceGlobsTests`.
