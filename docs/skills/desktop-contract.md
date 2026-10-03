@@ -305,7 +305,7 @@ and stores `logo` as an opaque string, so a dangling path compiles
 cleanly. The image itself is guarded by the new `[branding].files`
 entry for `/usr/share/pixmaps/bluefin-gdm-logo.png` in
 `contracts/bluefin-desktop.toml`, enforced by
-`utah-verify-desktop-contract` in the same `RUN` layer.
+`utah-verify-desktop-contract` in the final cleanup `RUN` layer.
 
 `[configuration].files` asserts the keyfile's path on disk;
 `[configuration].file_contains` pins both the schema header and the
