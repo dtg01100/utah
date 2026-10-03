@@ -88,6 +88,7 @@ COPY scripts/install-packages.py \
      scripts/fix-home-labels.sh \
      scripts/install-v4l2loopback.sh \
      scripts/image-repo.sh \
+     scripts/parse-brewfile-flatpaks.sh \
      /tmp/utah-scripts/
 # Common publishes Bluefin artwork, desktop defaults, Brewfiles, and setup
 # hooks in a separate profile from its shared system files. Both are required:
@@ -136,7 +137,8 @@ RUN --mount=type=bind,from=v4l2loopback,source=/out,target=/tmp/utah-v4l2loopbac
                 verify-efi-chain.sh:utah-verify-efi-chain \
                 fix-home-labels.sh:utah-fix-home-labels \
                 install-v4l2loopback.sh:utah-install-v4l2loopback \
-                image-repo.sh:utah-image-repo; do \
+                image-repo.sh:utah-image-repo \
+                parse-brewfile-flatpaks.sh:utah-parse-brewfile-flatpaks; do \
       install -Dm 0755 "/tmp/utah-scripts/${pair%%:*}" "/usr/local/libexec/${pair##*:}" || exit 1; \
     done && \
     cp -a /tmp/utah-common/. / && \
