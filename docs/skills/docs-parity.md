@@ -24,12 +24,13 @@ metadata:
 
 Utah's user-facing docs page at
 [`docs.projectbluefin.io/utah`](https://docs.projectbluefin.io/utah) is
-**rendered from [`README.md`](../../README.md) at every docs build** by
+the **target state** for a shared build-time renderer in
 [`projectbluefin/documentation`](https://github.com/projectbluefin/documentation)'s
-shared build-time renderer
-([`scripts/fetch-readmes.mjs`](https://github.com/projectbluefin/documentation/blob/main/scripts/fetch-readmes.mjs)).
-`README.md` is the canonical source. Edit the README, not the docs wrapper,
-unless the change is the docs wrapper itself.
+`scripts/fetch-readmes.mjs`. Today that renderer fetches only
+`projectbluefin/server`'s README; `docs/utah.mdx` is still hand-written
+prose. Once the Utah source is added there, `README.md` becomes the
+canonical source. Until then, edit the README **and** the docs wrapper in
+the same change, or the two will drift.
 
 This skill is the reconciliation contract: what the README owns, what the
 docs page owns, and how to land changes without either one of them drifting
@@ -81,7 +82,7 @@ page as follows:
 |---|---|---|---|
 | Identity | "Utah is Bluefin built on Fedora Hummingbird … Utah adds the desktop layer" | Same identity, plus the Fedora Hummingbird Magazine link | README "What it is" |
 | Two-repo composition | "Utah is composed across two coordinated repositories" with `projectbluefin/utah-packages` | Same two-repo table | README "What it is" |
-| Pre-alpha status | "Utah is an alpha build … its `:testing` container image is published on GHCR" | False claim — corrected to "no image, no ISO artifact, no installer … none of that is published" with a tracker link | README "What it is" + "Download" |
+| Pre-alpha status | "Utah is an alpha build … its `:testing` container image is published on GHCR" | Refined: CI pushes dated `testing-<date>-<sha>` snapshots to `ghcr.io/projectbluefin/utah` for the post-`testing`-e2e workflow, but `publish_stream_tag: "false"` suppresses the floating `:testing` consumer tag, no ISO has been released, and no installer is published — the corrected README names those as separate gaps with a tracker link | README "What it is" + "Download" |
 | Download | `https://projectbluefin.dev/utah-live-latest.iso` | No artifact is published; the section explains why and points at the tracker | README "Download" |
 | Image streams | `utah`, `utah-nvidia`, `utah-gaming`, `utah-nvidia-gaming` on stable/testing | Same set; canonical source is `config/flavors.json` | README "Image streams" |
 | Features / stack | Kernel options + OGC + Gaming mode; NVIDIA and Gaming flavors; GNOME 51 from source | Same explanations, with the precise kernel/NVIDIA/Secure Boot caveats | README "Known gaps" |
@@ -115,10 +116,11 @@ When changing the README in a way the docs page surfaces:
    renderer fetches `main`). PR title is a Conventional Commit (`docs:`,
    `fix:`, `feat:`); the merge rebuilds the docs site.
 4. After the merge, `docs.projectbluefin.io/utah` is updated by the
-   documentation repo's next scheduled build, which fetches the new README,
-   resolves relative links, and re-renders. No browser-side fetch; no
-   silent stale fallback (the renderer's contract — see the doc-types skill
-   in `projectbluefin/documentation`).
+   documentation repo's next `pages.yml` push (builds on push, not on a
+   schedule), which fetches the new README, resolves relative links, and
+   re-renders. No browser-side fetch; no silent stale fallback (the
+   renderer's contract — see `docs/skills/variant-docs-pages.md` in
+   `projectbluefin/documentation`).
 
 When adding or changing a live component on the docs page (a catalog, a
 switch-command widget, a download-button):

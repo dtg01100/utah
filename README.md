@@ -40,10 +40,16 @@ Two repositories, the way `common` and `brew` already work:
 
 ## Download
 
-**No Utah image or ISO is published yet.** Nothing here is ready to run on a
-machine you care about, and no download URL is intentionally offered — see
-[Known gaps](#known-gaps) for what is and is not built. Track the publication
-gate in the
+**No downloadable Utah artifact is offered.** No ISO has been released, and
+no consumer-facing image tag is published: `stream_name: testing` is built
+with `publish_stream_tag: "false"` in `.github/workflows/build.yml`, which
+deliberately suppresses the floating `:testing` tag the table below describes.
+The CI pipeline does push dated `testing-<date>-<sha>` snapshots to
+`ghcr.io/projectbluefin/utah` for the post-`testing`-e2e workflow to consume
+(see `dispatch-iso` in `build.yml`); those are intermediate artifacts, not
+a release. Nothing here is ready to run on a machine you care about, and no
+download URL is intentionally offered — see [Known gaps](#known-gaps) for
+what is and is not built. Track the publication gate in the
 [`enhancement`/`iso` labels on the issue tracker](https://github.com/projectbluefin/utah/issues?q=is%3Aissue+label%3Aiso+OR+label%3Aenhancement+sort%3Aupdated-desc);
 the first published artifact will be linked from here and from the [Utah
 docs page](https://docs.projectbluefin.io/utah) at the same time.
@@ -51,12 +57,11 @@ docs page](https://docs.projectbluefin.io/utah) at the same time.
 ## Documentation
 
 The user-facing Utah docs page at
-[docs.projectbluefin.io/utah](https://docs.projectbluefin.io/utah) renders
-this README at every build and is the canonical home for the live
-`DriverVersionsCatalog` (kernel, Mesa, NVIDIA, GNOME versions, provenance
-and update date, image switch commands, reboot guidance). Edit
-[`README.md`](README.md) — not the docs wrapper — and the catalog stays
-honest because it is generated, not hand-maintained.
+[docs.projectbluefin.io/utah](https://docs.projectbluefin.io/utah) is the
+canonical home for the live `DriverVersionsCatalog` (kernel, Mesa, NVIDIA,
+GNOME versions, provenance and update date, image switch commands, reboot
+guidance). Edit [`README.md`](README.md) — not the docs wrapper — and the
+catalog stays honest because it is generated, not hand-maintained.
 
 ## Image streams
 
