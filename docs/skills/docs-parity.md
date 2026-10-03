@@ -42,7 +42,9 @@ Everything that is **true of the source repository right now**:
 
 - Identity, architecture, and the two-repository composition with
   `projectbluefin/utah-packages`.
-- The honest pre-alpha status, including the "nothing is published" rule.
+- The honest pre-alpha status, including which artifacts are published (the
+  `:testing` consumer tag, after `post-testing-e2e` validates a digest) and
+  which are not (no ISO, no installer, no `:stable` promotion yet).
 - The complete Known gaps list (live-media boot, Secure Boot, bootc timers,
   ESP maintenance, Wi-Fi coverage, NVIDIA/gaming readiness, codec support,
   CUDA exclusion) — the docs page never carries the long form.
@@ -82,8 +84,8 @@ page as follows:
 |---|---|---|---|
 | Identity | "Utah is Bluefin built on Fedora Hummingbird … Utah adds the desktop layer" | Same identity, plus the Fedora Hummingbird Magazine link | README "What it is" |
 | Two-repo composition | "Utah is composed across two coordinated repositories" with `projectbluefin/utah-packages` | Same two-repo table | README "What it is" |
-| Pre-alpha status | "Utah is an alpha build … its `:testing` container image is published on GHCR" | Refined: CI pushes dated `testing-<date>-<sha>` snapshots to `ghcr.io/projectbluefin/utah` for the post-`testing`-e2e workflow, but `publish_stream_tag: "false"` suppresses the floating `:testing` consumer tag, no ISO has been released, and no installer is published — the corrected README names those as separate gaps with a tracker link | README "What it is" + "Download" |
-| Download | `https://projectbluefin.dev/utah-live-latest.iso` | No artifact is published; the section explains why and points at the tracker | README "Download" |
+| Pre-alpha status | "Utah is an alpha build … its `:testing` container image is published on GHCR" | Refined: the `:testing` consumer tag **is** published on `ghcr.io/projectbluefin/utah:testing` once `post-testing-e2e` validates a digest (`.github/workflows/post-testing-e2e.yml:286-309`); `publish_stream_tag: "false"` defers the floating `:testing` tag, not blocks it. No ISO has been released, no installer is published, and `:stable` is not yet promoted — the corrected README names each gap separately and links the `enhancement` label on the issue tracker | README "What it is" + "Download" |
+| Download | `https://projectbluefin.dev/utah-live-latest.iso` | No ISO has been released; the section explains what is and is not published (the `:testing` consumer tag is, after `post-testing-e2e` validation) and points at the tracker | README "Download" |
 | Image streams | `utah`, `utah-nvidia`, `utah-gaming`, `utah-nvidia-gaming` on stable/testing | Same set; canonical source is `config/flavors.json` | README "Image streams" |
 | Features / stack | Kernel options + OGC + Gaming mode; NVIDIA and Gaming flavors; GNOME 51 from source | Same explanations, with the precise kernel/NVIDIA/Secure Boot caveats | README "Known gaps" |
 | Current Versions | `<DriverVersionsCatalog streamId="utah-testing" />` (live, empty today) | Component kept; README does not duplicate it | docs page only |
