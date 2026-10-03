@@ -78,9 +78,11 @@ gaps — names Bluefin's published image ships from a build file outside
 `baselines/triage.toml` (`nvtop` is the current example). The runtime
 repository allowlist is asserted both by `--check` against the `.repo` files
 in `packages/` before composition and by the on-image verifier against the
-composed image's dnf5 default `reposdir` paths (`/etc/yum.repos.d`,
-`/etc/distro.repos.d`, `/usr/share/dnf5/repos.d`), so a `.repo` file the base
-image ships in any of those directories is held to the same allowlist. The
+composed image's runtime repositories: every `reposdir` dnf5 resolves at
+runtime from the base image's `[main]` config (defaulting to
+`/etc/yum.repos.d`, `/etc/distro.repos.d`, `/usr/share/dnf5/repos.d` when no
+`reposdir=` is set), so a `.repo` file the base image ships in any of those
+directories is held to the same allowlist. The
 verify step retains the resolved origin/NEVRA set with build provenance as
 `/usr/share/utah/package-origins.json` and `package-origins.txt`. These counts
 are generated from `packages/bluefin.toml` and `packages/utah.toml`
