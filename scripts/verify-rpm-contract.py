@@ -117,14 +117,52 @@ def dnf5_config_files() -> list[Path]:
     return paths
 
 
+class Dnf5ConfigError(Exception):
+    """A dnf5 [main] config the gate cannot resolve the way dnf5 does."""
+
+
+# Arches whose rpm `$arch` equals dnf5's `$basearch`, so both can be substituted
+# from the running machine without reimplementing libdnf5's arch map.
+_IDENTITY_BASEARCHES: frozenset[str] = frozenset(
+    {"x86_64", "aarch64", "ppc64le", "s390x", "riscv64"}
+)
+_DNF_VAR_RE = re.compile(r"\$(?:\{(?P<braced>\w+)\}|(?P<bare>\w+))")
+
+
+def _substitute_dnf_vars(value: str, path: Path) -> str:
+    """Expand `$basearch`/`$arch` in a [main] value as libdnf5 would.
+
+    libdnf5 runs its variable substitution on every [main] value. Any other
+    variable ($releasever, custom vars from vars.d, ...) cannot be resolved
+    here with certainty, so it raises rather than scanning a literal path dnf5
+    never reads.
+    """
+    machine = os.uname().machine
+    known = {"arch": machine, "basearch": machine} if machine in _IDENTITY_BASEARCHES else {}
+
+    def repl(match: re.Match[str]) -> str:
+        name = match.group("braced") or match.group("bare")
+        if name not in known:
+            raise Dnf5ConfigError(
+                f"dnf5 config {path} sets reposdir with unresolvable variable ${name}"
+            )
+        return known[name]
+
+    return _DNF_VAR_RE.sub(repl, value)
+
+
 def parse_reposdir_from_config(config_files: list[Path]) -> list[Path] | None:
     """The reposdir list the latest [main] config wins with, or None.
 
     Returns the last non-empty `reposdir=` value found, which is what dnf5
     resolves at runtime (the docs say the later file's option wins). Returns
     None if no config sets the option, so the caller can fall back to the
-    documented default. A malformed or unreadable config is treated as no
-    contribution: the next file still wins.
+    documented default. Duplicate keys and sections are accepted with the last
+    value winning, as libdnf5's parser does. A config that exists but cannot be
+    read or parsed raises Dnf5ConfigError: dnf5 itself aborts on such a file,
+    and skipping it would silently widen the gate back to the defaults.
+    Inline `#` text is not stripped, so `reposdir=/opt/x # note` scans the
+    extra (nonexistent) entries too -- a harmless superset.
     """
     configured: list[Path] | None = None
     for path in config_files:
@@ -132,18 +170,19 @@ def parse_reposdir_from_config(config_files: list[Path]) -> list[Path] | None:
             continue
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        parser = configparser.ConfigParser(interpolation=None)
+        except OSError as err:
+            raise Dnf5ConfigError(f"could not read dnf5 config {path}: {err}") from err
+        parser = configparser.ConfigParser(interpolation=None, strict=False)
         try:
-            parser.read_string(text)
-        except configparser.Error:
-            continue
+            parser.read_string(text, source=str(path))
+        except configparser.Error as err:
+            raise Dnf5ConfigError(f"could not parse dnf5 config {path}: {err}") from err
         if not parser.has_section("main"):
             continue
         raw = parser.get("main", "reposdir", fallback="").strip()
         if not raw:
             continue
+        raw = _substitute_dnf_vars(raw, path)
         configured = [Path(p) for p in re.split(r"[\s,]+", raw) if p]
     return configured
 
@@ -155,7 +194,8 @@ def runtime_reposdir_paths() -> list[Path]:
     that list replaces the documented default. Falls back to the default
     `DEFAULT_REPOS_DIRS` when no config opts in (#536): a base image that
     configures a custom reposdir would otherwise slip a `.repo` file past the
-    allowlist gate that scans only the three defaults.
+    allowlist gate that scans only the three defaults. Raises Dnf5ConfigError
+    when a config cannot be resolved, so the caller fails the gate closed.
     """
     configured = parse_reposdir_from_config(dnf5_config_files())
     return list(configured) if configured is not None else list(DEFAULT_REPOS_DIRS)
@@ -842,8 +882,13 @@ def main() -> int:
     # drop-in (see dnf5_config_files), in which case the hardcoded list misses
     # the configured paths and a `.repo` file placed there bypasses the
     # allowlist.
+    try:
+        runtime_repos_dirs = runtime_reposdir_paths()
+    except Dnf5ConfigError as err:
+        print(f"ERROR: {err}", file=sys.stderr)
+        return 1
     repo_errors: list[str] = []
-    for repos_dir in runtime_reposdir_paths():
+    for repos_dir in runtime_repos_dirs:
         repo_errors.extend(
             verify_repository_policy(
                 repos_dir, allowed_repos,

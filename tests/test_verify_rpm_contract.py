@@ -129,7 +129,8 @@ def run_main(module, manifest: Path, overlay: Path, installed: set[str],
              extra_argv: list[str] | None = None,
              report_dir: Path | None = None,
              runtime_repos_dirs: "Path | list[Path] | None" = None,
-             stderr_buffer: io.StringIO | None = None) -> tuple[int, str, str]:
+             stderr_buffer: io.StringIO | None = None,
+             reposdir_error: Exception | None = None) -> tuple[int, str, str]:
     """Invoke scripts/verify-rpm-contract.py's main() with stubbed packages.
 
     Returns (exit_code, stdout, stderr). Shared by VerifyModeTests and
@@ -178,12 +179,17 @@ def run_main(module, manifest: Path, overlay: Path, installed: set[str],
         runtime_repos = [runtime_repos_dirs]
     else:
         runtime_repos = list(runtime_repos_dirs)
+    def runtime_reposdir_paths() -> list[Path]:
+        if reposdir_error is not None:
+            raise reposdir_error
+        return list(runtime_repos)
+
     stderr_text = ""
     base_patches = [
         patch.object(module, "is_installed",
                      side_effect=lambda p: p in installed),
         patch.object(module, "query_packages", side_effect=fake_query),
-        patch.object(module, "runtime_reposdir_paths", lambda: list(runtime_repos)),
+        patch.object(module, "runtime_reposdir_paths", runtime_reposdir_paths),
         patch.object(sys, "argv", argv),
         patch.dict(os.environ, {"IMAGE_FLAVOR": flavor, "UTAH_REPORT_DIR": str(report_dir)}),
         redirect_stdout(stdout),
@@ -1261,20 +1267,52 @@ class Dnf5ConfigTests(unittest.TestCase):
             )
             self.assertIsNone(self.module.parse_reposdir_from_config([path]))
 
-    def test_parse_reposdir_skips_malformed_config_files(self) -> None:
-        """An unreadable or invalid file is treated as no contribution; later files still win."""
+    def test_parse_reposdir_fails_closed_on_malformed_config(self) -> None:
+        """An unparseable config raises instead of silently falling back to the defaults."""
         body_late = "[main]\nreposdir = /opt/late-repos\n"
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
-            self._write_conf(
+            bad = self._write_conf(
                 directory, "00-bad.conf",
                 "[main\nunterminated = section\n",
             )
             late = self._write_conf(directory, "99-late.conf", body_late)
-            result = self.module.parse_reposdir_from_config(
-                [directory / "00-bad.conf", late],
-            )
-        self.assertEqual(result, [Path("/opt/late-repos")])
+            with self.assertRaises(self.module.Dnf5ConfigError):
+                self.module.parse_reposdir_from_config([bad, late])
+
+    def test_parse_reposdir_accepts_duplicate_keys_like_libdnf5(self) -> None:
+        """libdnf5 lets a duplicate key overwrite; a duplicate must not drop reposdir."""
+        body = "[main]\nexclude=foo\nexclude=bar\nreposdir=/opt/evil\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_conf(Path(tmp), "dnf.conf", body)
+            result = self.module.parse_reposdir_from_config([path])
+        self.assertEqual(result, [Path("/opt/evil")])
+
+    def test_parse_reposdir_duplicate_reposdir_and_sections_last_wins(self) -> None:
+        """Duplicate [main] blocks merge and the last reposdir wins, as in libdnf5."""
+        body = "[main]\nreposdir=/opt/first\n[main]\nreposdir=/opt/second\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_conf(Path(tmp), "dnf.conf", body)
+            result = self.module.parse_reposdir_from_config([path])
+        self.assertEqual(result, [Path("/opt/second")])
+
+    def test_parse_reposdir_substitutes_basearch(self) -> None:
+        """libdnf5 expands $basearch/$arch in [main] values; the gate must scan the expanded path."""
+        body = "[main]\nreposdir=/etc/repos-$basearch,/etc/r-${arch}\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_conf(Path(tmp), "dnf.conf", body)
+            with patch.object(self.module.os, "uname",
+                              return_value=os.uname_result(("", "", "", "", "x86_64"))):
+                result = self.module.parse_reposdir_from_config([path])
+        self.assertEqual(result, [Path("/etc/repos-x86_64"), Path("/etc/r-x86_64")])
+
+    def test_parse_reposdir_fails_closed_on_unresolvable_variable(self) -> None:
+        """A variable the gate cannot resolve raises rather than scanning a literal path."""
+        body = "[main]\nreposdir=/etc/repos-$releasever\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_conf(Path(tmp), "dnf.conf", body)
+            with self.assertRaises(self.module.Dnf5ConfigError):
+                self.module.parse_reposdir_from_config([path])
 
     def test_parse_reposdir_returns_none_for_a_missing_file(self) -> None:
         """A nonexistent path in the input list is skipped."""
@@ -1666,6 +1704,21 @@ class OnImageRepoAllowlistTests(unittest.TestCase):
                 code = self.module.main()
         self.assertEqual(code, 1)
         self.assertIn("Fedora repository 'fedora-rawhide' is enabled", stderr.getvalue())
+
+    def test_an_unresolvable_dnf5_config_fails_the_gate(self) -> None:
+        """A dnf5 config the gate cannot resolve fails closed instead of scanning the defaults."""
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            manifest = write_manifest(directory, ["bash"])
+            overlay = write_overlay(directory, gnome=["gnome-shell"])
+            code, _, err = run_main(
+                self.module, manifest, overlay, {"bash", "gnome-shell"},
+                stderr_buffer=io.StringIO(),
+                reposdir_error=self.module.Dnf5ConfigError(
+                    "could not parse dnf5 config /etc/dnf/dnf.conf: bad"),
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("ERROR: could not parse dnf5 config /etc/dnf/dnf.conf", err)
 
 
 class UsageTests(unittest.TestCase):
