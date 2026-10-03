@@ -63,6 +63,10 @@ files = [
   # falls back to /usr/share/pixmaps/fedora-gdm-logo.png from fedora-logos,
   # and the login screen shows the Fedora wordmark instead of Bluefin (#378).
   "/etc/dconf/db/gdm.d/01-bluefin-gdm-logo",
+  # Candidate coarse-grained runtime D3 policy for #492. Its presence does
+  # not establish that suspend/resume succeeds on affected NVIDIA hardware.
+  # See docs/skills/kernel-cache.md "The NVIDIA suspend / PM quirk".
+  "/usr/lib/modprobe.d/zz-nvidia-pm.conf",
 ]
 
 [configuration.file_contains]
@@ -84,6 +88,10 @@ files = [
 "/etc/dconf/db/gdm.d/01-bluefin-gdm-logo" = [
   "[org/gnome/login-screen]",
   "logo='/usr/share/pixmaps/bluefin-gdm-logo.png'",
+]
+# Ship the chosen coarse-grained policy; hardware efficacy is a separate gate.
+"/usr/lib/modprobe.d/zz-nvidia-pm.conf" = [
+  "options nvidia NVreg_DynamicPowerManagement=0x01",
 ]
 
 [flatpak]

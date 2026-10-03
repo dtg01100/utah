@@ -1,7 +1,7 @@
 ---
 name: kernel-cache
-version: "1.0"
-last_updated: "2026-09-19"
+version: "1.1"
+last_updated: "2026-10-02"
 id: kernel-cache
 one_line_purpose: Understand and rebuild the OGC kernel and NVIDIA module cache image.
 entry_point: docs/skills/kernel-cache.md
@@ -115,6 +115,53 @@ input-hash tag, not an immutable digest, so a cached installer gets the same
 check as a fresh one. Bumping `UTAH_NVIDIA_DRIVER_VERSION` means updating
 `NVIDIA_RUN_SHA256` with it, from NVIDIA's published
 `NVIDIA-Linux-x86_64-<version>.run.sha256sum` (comment, `install-nvidia.sh`).
+
+## The NVIDIA suspend / PM quirk
+
+Utah issue [#492](https://github.com/projectbluefin/utah/issues/492) reports
+a suspend hang on an Acer Nitro AN517-52 with a GTX 1650 Ti Mobile (Turing).
+Treat that report as a real failure, not as proof of a runtime-PM root cause.
+[NVIDIA/open-gpu-kernel-modules#1271](https://github.com/NVIDIA/open-gpu-kernel-modules/issues/1271)
+reports a similar GSP timeout / `nvEvoDisableVblankSemControl` resume failure
+on an RTX 4070 Ti SUPER with driver 610.43.03; it does not establish a 595.x
+RTD3 cause or verify this mitigation.
+
+`system_files/shared/usr/lib/modprobe.d/zz-nvidia-pm.conf` selects
+`NVreg_DynamicPowerManagement=0x01` as a **candidate mitigation**, not a
+verified suspend fix. NVIDIA's [595.99.02 RTD3 documentation](https://download.nvidia.com/XFree86/Linux-x86_64/595.99.02/README/dynamicpowermanagement.html)
+defines `0x01` as coarse-grained power control and `0x02` as fine-grained.
+Both can reach the GPU's lowest power state; fine-grained control additionally
+allows power-down while applications remain open but idle. The default is
+`0x03`: fine-grained on supported Ampere-or-newer notebooks, disabled on
+pre-Ampere notebooks and desktops. On the reported Turing laptop this policy
+can therefore enable RTD3 rather than merely reduce it. RTD3 requires supported
+ACPI/platform hardware, CONFIG_PM, and runtime-PM support from the GPU's PCI
+functions. Power and battery effects have not been measured; do not claim a
+negligible cost or a shallower power state.
+
+The shared drop-in has no effect when nvidia is not loaded. It sorts after
+`nvidia.conf` but **before** common's `zz-nvidia-suspend.conf`; those separate
+notifier and temporary-file options are not changed here. kmod accumulates
+options in filename order rather than discarding earlier assignments. For
+scalar module parameters, the kernel applies later assignments last. A later
+configuration file, a same-named administrator replacement, or a load-time
+option can supersede this policy; the prefix does not guarantee precedence
+over all configuration. `tests/test_nvidia_pm_modprobe.py` exercises the real
+modprobe consumer with isolated directories and `--show-depends`, never loading
+a module or executing an install command.
+
+Before calling #492 fixed, a hardware owner must test an image containing this
+policy on the **Acer Nitro AN517-52 / GTX 1650 Ti Mobile**, record driver/kernel,
+effective `DynamicPowerManagement` from `/proc/driver/nvidia/params`, runtime
+D3 status from `/proc/driver/nvidia/gpus/<PCI-BUS-ID>/power`, and before/after
+suspend/resume journals. Repeat the reporter's GNOME-menu scenario and check
+display/input recovery and idle power. No such hardware test is performed by
+the source or VM checks. Inspect the built driver without loading it using
+`modinfo -F parm /path/to/nvidia.ko` and `modinfo -F version /path/to/nvidia.ko`;
+the parameter must be exposed, but that alone does not prove resume works.
+For a failed previous boot, inspect `journalctl -b -1 -k` after recovery for
+GSP/Xid errors; do not equate similar log signatures with a proven cause.
+
 
 ## Verification
 
