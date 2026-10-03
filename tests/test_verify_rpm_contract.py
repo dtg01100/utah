@@ -1305,7 +1305,7 @@ class OnImageRepoAllowlistTests(unittest.TestCase):
         self.assertEqual(code, 0, err)
 
     def test_an_empty_runtime_repo_dir_passes(self) -> None:
-        """A real Fedora host's /etc/yum.repos.d might not be readable here."""
+        """An empty composed-image /etc/yum.repos.d passes the runtime repo scan."""
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
             manifest = write_manifest(directory, ["bash"])

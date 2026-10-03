@@ -332,13 +332,11 @@ def check_repo_sections(
     source: str,
     allowed_repos: set[str],
     *,
-
     expected_baseurls: dict[str, tuple[str, ...]] | None,
 ) -> list[str]:
     """Apply the allowlist to every section of an already-parsed config."""
     errors: list[str] = []
     for section_name in parser.sections():
-
         if not is_repo_enabled(parser.get(section_name, "enabled", fallback="1")):
             if section_name in allowed_repos:
                 errors.extend(repo_security_option_errors(section_name, parser, source))

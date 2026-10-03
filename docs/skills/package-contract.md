@@ -167,11 +167,12 @@ install-set check it attests the supply chain the image is composed from
   the runtime layer (`Containerfile`, v4l2loopback stage).
   The scan relies on the `COPY packages/hummingbird.repo …
   /etc/yum.repos.d/` line (`Containerfile`, runtime stage) overwriting whatever
-  the base image ships under `/etc/yum.repos.d/hummingbird.repo`; if the base
-  changes that file's section id or baseurl without Utah shipping a matching
-  override, the build fails with the intended trip-wire message from
-  `check_repo_sections`. Operators updating the base pin must keep this coupling
-  intact. The base digest currently pinned at `Containerfile` L1 was inspected:
+  the base image ships under `/etc/yum.repos.d/hummingbird.repo`. Because that
+  COPY runs before the verify step, changes to the contents of the base's own
+  `hummingbird.repo` (section id, baseurl) are never observed by the scan; only
+  a new or renamed repository file trips the gate. Operators updating the base
+  pin must inspect the base's `hummingbird.repo` themselves and keep this
+  coupling intact. The base digest currently pinned at `Containerfile` L1 was inspected:
   it ships only `hummingbird.repo` under `/etc/yum.repos.d`, with a
   `[public-hummingbird-$basearch-rpms]` section and a disabled source section,
   and Utah's runtime COPY replaces that file with its explicit x86_64 pin. A
