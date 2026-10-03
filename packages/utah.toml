@@ -179,8 +179,9 @@ packages = [
     "google-noto-sans-symbols-2-fonts",
     "google-noto-sans-math-fonts",
     # Math-font core set. stix-fonts is published in the pinned factory image
-    # (resolves utah-packages#147); default-fonts-core-math Requires
-    # stix-fonts, so the math font set joins the parity list (#382).
+    # (resolves utah-packages#147). default-fonts-core-math, which Requires
+    # it, stays out until its own parity ticket (#263); this adds the font
+    # itself (#382).
     "stix-fonts",
     # Shell and tooling Bluefin users reach for
     "bash-completion",
@@ -310,7 +311,9 @@ packages = [
     "libertas-firmware",
     # Intel/AMD CPU microcode updates, packaged separately from
     # linux-firmware (#382). microcode_ctl was deliberately absent because
-    # the factory had no recipe; the factory now publishes one.
+    # the factory had no recipe; the factory now publishes one. Early loading
+    # also needs the initramfs regenerated after this install: until #564
+    # lands, the shipped initramfs carries no microcode at all.
     "microcode_ctl",
 ]
 
