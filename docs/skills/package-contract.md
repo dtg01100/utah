@@ -1,7 +1,7 @@
 ---
 name: package-contract
-version: "1.0"
-last_updated: "2026-10-01"
+version: "1.1"
+last_updated: "2026-10-03"
 id: package-contract
 one_line_purpose: Maintain Bluefin package parity and Utah's overlay manifest.
 entry_point: docs/skills/package-contract.md
@@ -230,6 +230,14 @@ does not (`baselines/GAP.md`). It does not say *where* the missing name
 could come from, only that it is missing. That gap was the 2026-09-30
 bare-metal audit (#382): `rpm -qa` both images, `comm` the difference,
 then partition each gap name by which repository could supply it.
+
+The `EXTRACT` script inside that tool globs a closed list of user-visible
+paths (applications, autostarts, sessions, systemd units, `/usr/bin`,
+`/usr/sbin`) and the Bluefin firefox-config defaults
+(`/usr/share/ublue-os/firefox-config/*.js`, #502). Adding a path means
+adding a glob AND a `KINDS` entry so `write_report()` can classify the
+new rows; the contract is pinned by
+`tests/test_image_baseline.py::SurfaceGlobsTests`.
 
 `scripts/audit-bluefin-parity.py` is the re-runnable version of that
 pipeline. Every name Bluefin ships that Utah does not install (and does

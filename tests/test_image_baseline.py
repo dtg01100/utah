@@ -209,6 +209,46 @@ class ExtractTests(unittest.TestCase):
         self.assertTrue(self.out.is_dir())
 
 
+class SurfaceGlobsTests(unittest.TestCase):
+    """The surface baseline must enumerate `/usr/share/ublue-os/firefox-config/`.
+
+    `99-flatpaks.sh` copies `/usr/share/ublue-os/firefox-config/*.js` into the
+    Flatpak extension directory at first boot, so a baseline that cannot see
+    that directory cannot answer the "did firefox-config ship on this image?"
+    question directly. The closed list of glob patterns inside `EXTRACT` was
+    the root cause: it enumerated applications, autostarts, sessions, systemd
+    units, and the bin trees, and nothing under `/usr/share/ublue-os/`. The
+    tests below pin the contract so the closed list cannot shrink again
+    without the change also updating this suite (#502).
+    """
+
+    def test_the_extract_script_globs_the_firefox_config_directory(self):
+        # The hook copies `*.js` defaults; the EXTRACT pattern must catch them
+        # so `baselines/<image>/surface.tsv` records each shipped file.
+        self.assertIn("/usr/share/ublue-os/firefox-config/*.js", ib.EXTRACT)
+
+    def test_kind_names_the_ublue_os_paths(self):
+        # `write_report` groups gaps by kind, so an unknown kind would raise
+        # StopIteration mid-render and the report would not land. Pin the
+        # classification alongside the glob so a future KINDS change cannot
+        # leave firefox-config rows ungroupable.
+        self.assertEqual(
+            ib.kind("/usr/share/ublue-os/firefox-config/01-bluefin-global.js"),
+            "ublue asset")
+
+    def test_kind_still_groups_every_existing_category(self):
+        # The new KINDS entry must not steal classifications from earlier ones.
+        # Order matters: the existing patterns (apps, units, bin) win for their
+        # respective paths; the new entry only fires on /usr/share/ublue-os/.
+        self.assertEqual(ib.kind("/usr/share/applications/firefox.desktop"), "app")
+        self.assertEqual(ib.kind("/usr/bin/bash"), "command")
+        self.assertEqual(ib.kind("/usr/sbin/iptables"), "command")
+        self.assertEqual(ib.kind("/usr/lib/systemd/user/pipewire.service"), "user unit")
+        self.assertEqual(ib.kind("/usr/lib/systemd/system/sshd.service"), "system unit")
+        self.assertEqual(ib.kind("/usr/share/wayland-sessions/gnome.desktop"), "session")
+        self.assertEqual(ib.kind("/etc/xdg/autostart/foo.desktop"), "autostart")
+
+
 class DakotaSbomTests(unittest.TestCase):
     """`dakota` turns Dakota's SPDX SBOM into an element list.
 
