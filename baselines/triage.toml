@@ -1037,9 +1037,6 @@ status = "untriaged"
 [package.capstone]
 status = "untriaged"
 
-[package.cracklib-dicts]
-status = "untriaged"
-
 [package.desktop-file-utils]
 status = "untriaged"
 
