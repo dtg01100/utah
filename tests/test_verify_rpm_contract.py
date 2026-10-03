@@ -183,7 +183,7 @@ def run_main(module, manifest: Path, overlay: Path, installed: set[str],
         patch.object(module, "is_installed",
                      side_effect=lambda p: p in installed),
         patch.object(module, "query_packages", side_effect=fake_query),
-        patch.object(module, "RUNTIME_REPOS_DIRS", runtime_repos),
+        patch.object(module, "runtime_reposdir_paths", lambda: list(runtime_repos)),
         patch.object(sys, "argv", argv),
         patch.dict(os.environ, {"IMAGE_FLAVOR": flavor, "UTAH_REPORT_DIR": str(report_dir)}),
         redirect_stdout(stdout),
@@ -540,7 +540,8 @@ class ResolvedContractTests(unittest.TestCase):
             # temp directory (#454 on-image scan).
             runtime_repos = [Path(tempfile.mkdtemp())]
             with patch.object(self.module, "Path", redirected), \
-                    patch.object(self.module, "RUNTIME_REPOS_DIRS", runtime_repos), \
+                    patch.object(self.module, "runtime_reposdir_paths",
+                                 lambda: list(runtime_repos)), \
                     patch.object(self.module, "is_installed",
                                  side_effect=lambda p: p in installed), \
                     patch.object(self.module, "query_packages", side_effect=fake_query), \
@@ -1181,6 +1182,136 @@ class SupplyChainTests(unittest.TestCase):
         self.assertIn("mesa-dri-drivers-25.1-1.hum.i686", text)
 
 
+class Dnf5ConfigTests(unittest.TestCase):
+    """The on-image reposdir scan reads dnf5's [main] config rather than hardcoding.
+
+    A `reposdir=` setting in /etc/dnf/dnf.conf or any file under
+    /etc/dnf/libdnf5.conf.d/ replaces the documented default
+    (`/etc/yum.repos.d`, `/etc/distro.repos.d`, `/usr/share/dnf5/repos.d`).
+    The hardcoded list misses the configured paths (#536), so the scan reads
+    every config in load order and uses the last-set value. A config that
+    sets `reposdir=` to a single custom path makes that path the only reposdir
+    dnf5 loads, and the gate must scan it.
+    """
+
+    def setUp(self) -> None:
+        self.module = load_module()
+
+    def _write_conf(self, directory: Path, name: str, body: str) -> Path:
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / name
+        path.write_text(body, encoding="utf-8")
+        return path
+
+    def test_parse_reposdir_returns_none_when_no_config_sets_it(self) -> None:
+        """Without a `reposdir=` line in any config, the documented default applies."""
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            distro = directory / "distro"
+            user = directory / "user"
+            paths = [self._write_conf(distro, "10-base.conf", "[main]\n"),
+                     self._write_conf(user, "99-empty.conf", "[main]\n")]
+            self.assertIsNone(self.module.parse_reposdir_from_config(paths))
+
+    def test_parse_reposdir_picks_up_a_single_set_value(self) -> None:
+        """A single `reposdir=` line replaces the documented default."""
+        body = "[main]\nreposdir = /opt/repos\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            path = self._write_conf(directory, "00-base.conf", body)
+            result = self.module.parse_reposdir_from_config([path])
+        self.assertEqual(result, [Path("/opt/repos")])
+
+    def test_parse_reposdir_splits_space_separated_list(self) -> None:
+        """dnf5 accepts whitespace-separated entries inside `reposdir=`."""
+        body = "[main]\nreposdir = /opt/repos /etc/extra-repos\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            path = self._write_conf(directory, "00-base.conf", body)
+            result = self.module.parse_reposdir_from_config([path])
+        self.assertEqual(result, [Path("/opt/repos"), Path("/etc/extra-repos")])
+
+    def test_parse_reposdir_splits_comma_separated_list(self) -> None:
+        """dnf5 accepts comma-separated entries inside `reposdir=`."""
+        body = "[main]\nreposdir = /opt/repos, /etc/extra-repos\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            path = self._write_conf(directory, "00-base.conf", body)
+            result = self.module.parse_reposdir_from_config([path])
+        self.assertEqual(result, [Path("/opt/repos"), Path("/etc/extra-repos")])
+
+    def test_parse_reposdir_later_config_wins(self) -> None:
+        """dnf5 documents that the last option wins; later files override earlier ones."""
+        body_early = "[main]\nreposdir = /opt/early-repos\n"
+        body_late = "[main]\nreposdir = /opt/late-repos\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            early = self._write_conf(directory, "00-early.conf", body_early)
+            late = self._write_conf(directory, "99-late.conf", body_late)
+            result = self.module.parse_reposdir_from_config([early, late])
+        self.assertEqual(result, [Path("/opt/late-repos")])
+
+    def test_parse_reposdir_skips_files_without_a_main_section(self) -> None:
+        """A config with no [main] does not contribute to `reposdir=`."""
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            path = self._write_conf(
+                directory, "00-no-main.conf",
+                "[repos]\nid = value\n",
+            )
+            self.assertIsNone(self.module.parse_reposdir_from_config([path]))
+
+    def test_parse_reposdir_skips_malformed_config_files(self) -> None:
+        """An unreadable or invalid file is treated as no contribution; later files still win."""
+        body_late = "[main]\nreposdir = /opt/late-repos\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            self._write_conf(
+                directory, "00-bad.conf",
+                "[main\nunterminated = section\n",
+            )
+            late = self._write_conf(directory, "99-late.conf", body_late)
+            result = self.module.parse_reposdir_from_config(
+                [directory / "00-bad.conf", late],
+            )
+        self.assertEqual(result, [Path("/opt/late-repos")])
+
+    def test_parse_reposdir_returns_none_for_a_missing_file(self) -> None:
+        """A nonexistent path in the input list is skipped."""
+        self.assertIsNone(self.module.parse_reposdir_from_config([Path("/nonexistent.conf")]))
+
+    def test_runtime_reposdir_paths_returns_configured_when_set(self) -> None:
+        """The on-image scan honours the configured reposdir when any config sets it."""
+        body = "[main]\nreposdir = /opt/runtime-repos\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            distro = directory / "distro"
+            user = directory / "user"
+            self._write_conf(distro, "10-distro.conf", body)
+            self._write_conf(user, "90-user.conf", "[main]\n")
+            main_conf = directory / "dnf.conf"
+            main_conf.write_text("[main]\n", encoding="utf-8")
+            with patch.object(self.module, "DNF_DISTRO_CONF_D", distro), \
+                    patch.object(self.module, "DNF_USER_CONF_D", user), \
+                    patch.object(self.module, "DNF_MAIN_CONF", main_conf):
+                paths = self.module.runtime_reposdir_paths()
+        self.assertEqual(paths, [Path("/opt/runtime-repos")])
+
+    def test_runtime_reposdir_paths_falls_back_to_defaults(self) -> None:
+        """No `reposdir=` set anywhere means the documented default applies."""
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            main_conf = directory / "dnf.conf"
+            main_conf.write_text("[main]\n", encoding="utf-8")
+            no_user = directory / "no-user"; no_user.mkdir()
+            no_distro = directory / "no-distro"; no_distro.mkdir()
+            with patch.object(self.module, "DNF_DISTRO_CONF_D", no_distro), \
+                    patch.object(self.module, "DNF_USER_CONF_D", no_user), \
+                    patch.object(self.module, "DNF_MAIN_CONF", main_conf):
+                paths = self.module.runtime_reposdir_paths()
+        self.assertEqual(paths, list(self.module.DEFAULT_REPOS_DIRS))
+
+
 class OnImageRepoAllowlistTests(unittest.TestCase):
     """The on-image run scans dnf5's default reposdir paths (#454, #513).
 
@@ -1427,6 +1558,75 @@ class OnImageRepoAllowlistTests(unittest.TestCase):
             )
         self.assertEqual(code, 0, err)
         self.assertIn("All 2 contract packages are present.", out)
+
+    def test_a_fedora_repo_in_a_configured_reposdir_fails(self) -> None:
+        """A base image that sets `reposdir=` to a custom path is scanned there.
+
+        `reposdir=` in any dnf5 [main] config replaces the documented default,
+        so a Fedora repo the base ships in the configured path bypasses the
+        allowlist unless the gate reads the configuration. Wire the mocked
+        dnf5 config to a custom reposdir; the on-image run must derive its
+        scan list from runtime_reposdir_paths() (unmocked) and fail on the
+        Fedora repo the base ships there.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            manifest = write_manifest(directory, ["bash"])
+            overlay = write_overlay(directory, gnome=["gnome-shell"])
+            custom_repos = directory / "custom-repos"
+            write_repo_file(
+                custom_repos, "public-hummingbird-x86_64-rpms",
+                baseurl="https://packages.redhat.com/api/pulp-content/public-hummingbird/x86_64/",
+            )
+            write_repo_file(
+                custom_repos, "fedora-rawhide",
+                baseurl="https://dl.fedoraproject.org/pub/fedora/linux/development/rawhide/$basearch/os/",
+            )
+            no_user = directory / "no-user"; no_user.mkdir()
+            no_distro = directory / "no-distro"; no_distro.mkdir()
+            dnf_main = directory / "dnf.conf"
+            dnf_main.write_text(
+                "[main]\nreposdir = " + str(custom_repos) + "\n", encoding="utf-8"
+            )
+            # Wire the actual config lookup; runtime_reposdir_paths() is NOT
+            # patched here, so the on-image run sees the configured list.
+            argv = ["verify-rpm-contract.py", str(manifest), str(overlay)]
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            report_dir = Path(tempfile.mkdtemp())
+            with patch.object(self.module, "DNF_DISTRO_CONF_D", no_distro), \
+                    patch.object(self.module, "DNF_USER_CONF_D", no_user), \
+                    patch.object(self.module, "DNF_MAIN_CONF", dnf_main), \
+                    patch.object(self.module, "is_installed",
+                                 side_effect=lambda p: p in {"bash", "gnome-shell"}), \
+                    patch.object(self.module, "query_packages",
+                                 side_effect=lambda pkgs: (
+                                     {p: info for p, info in {
+                                         "bash": {"name": "bash", "epoch": "0",
+                                                  "version": "5.2",
+                                                  "release": "1.hum.x86_64",
+                                                  "arch": "x86_64",
+                                                  "nevra": "bash-5.2-1.hum.x86_64",
+                                                  "origin": "hummingbird"},
+                                         "gnome-shell": {"name": "gnome-shell",
+                                                         "epoch": "0", "version": "51.2",
+                                                         "release": "1.hum.x86_64",
+                                                         "arch": "x86_64",
+                                                         "nevra":
+                                                             "gnome-shell-51.2-1.hum.x86_64",
+                                                         "origin": "hummingbird"},
+                                     }.items() if p in pkgs},
+                                     [p for p in pkgs if p not in {"bash", "gnome-shell"}],
+                                 )), \
+                    patch.object(sys, "argv", argv), \
+                    patch.dict(os.environ,
+                                {"IMAGE_FLAVOR": "main",
+                                 "UTAH_REPORT_DIR": str(report_dir)}), \
+                    redirect_stdout(stdout), \
+                    patch.object(sys, "stderr", stderr):
+                code = self.module.main()
+        self.assertEqual(code, 1)
+        self.assertIn("Fedora repository 'fedora-rawhide' is enabled", stderr.getvalue())
 
 
 class UsageTests(unittest.TestCase):

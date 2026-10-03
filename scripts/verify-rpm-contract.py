@@ -11,7 +11,9 @@ package-origin/NEVRA set is retained as a report with build provenance.
 `--check` validates the manifest itself off-image: the `.repo` files in
 `packages/` may name only the repositories the manifest allows. The on-image
 run applies the same allowlist to the composed image's runtime RPM
-repositories -- dnf5's default reposdir paths (#454, #513).
+repositories -- every `reposdir` dnf5 reads at runtime, derived from the
+[main] config the base image ships rather than a hardcoded default (#454,
+#513, #536).
 
 Mirrors assert_packages_present from projectbluefin/bluefin's
 build_files/shared/package-lib.sh: name every missing package, once.
@@ -53,18 +55,28 @@ DEFAULT_REPORT_DIR = "/usr/share/utah"
 # is what the report quotes: it says which package factory the NEVRAs came from
 # without needing a build argument plumbed through every stage.
 FACTORY_REPO_PATH = "/etc/yum.repos.d/utah-packages.repo"
-# Where the composed image's runtime RPM repositories live. --check works
-# against the source repo files in packages/; the on-image run scans dnf5's
-# default reposdir paths so repo files shipped by the Hummingbird base image are
-# subject to the same allowlist as the ones Utah itself copies in (#454, #513).
-# dnf5 loads every one of these when it resolves packages, so scanning only
-# /etc/yum.repos.d left a repo file the base ships in another default reposdir
-# enabled at runtime yet invisible to the gate (#513).
-RUNTIME_REPOS_DIRS: tuple[Path, ...] = (
+# Where the composed image's runtime RPM repositories live by default. --check
+# works against the source repo files in packages/; the on-image run scans the
+# paths dnf5 actually reads. dnf5 loads every one of these when it resolves
+# packages, so scanning only /etc/yum.repos.d left a repo file the base ships
+# in another default reposdir enabled at runtime yet invisible to the gate
+# (#513). A base image can also override this default via `reposdir=` in
+# /etc/dnf/dnf.conf or /etc/dnf/libdnf5.conf.d/*.conf, which replaces the
+# default list (#536): a config that sets reposdir to one custom path bypasses
+# the allowlist if this script only scans the hardcoded defaults.
+DEFAULT_REPOS_DIRS: tuple[Path, ...] = (
     Path("/etc/yum.repos.d"),
     Path("/etc/distro.repos.d"),
     Path("/usr/share/dnf5/repos.d"),
 )
+# Where dnf5 looks for its [main] configuration. dnf5 loads
+# /usr/share/dnf5/libdnf.conf.d/*.conf, then /etc/dnf/libdnf5.conf.d/*.conf,
+# then /etc/dnf/dnf.conf; options from later files override earlier ones.
+# repo_pin_errors reads `reposdir=` from the same files, so the on-image scan
+# honours the actual list dnf5 uses at runtime.
+DNF_DISTRO_CONF_D = Path("/usr/share/dnf5/libdnf.conf.d")
+DNF_USER_CONF_D = Path("/etc/dnf/libdnf5.conf.d")
+DNF_MAIN_CONF = Path("/etc/dnf/dnf.conf")
 FACTORY_PIN_RE = re.compile(r"^# factory-pin: (?P<digest>\S+)\s*$", re.MULTILINE)
 
 DISABLED_VALUES: frozenset[str] = frozenset({"0", "false", "no", "off"})
@@ -80,6 +92,68 @@ def section(overlay: Path, name: str, key: str = "packages") -> list[str]:
     if name not in data or key not in data[name]:
         return []
     return list(data[name][key])
+
+
+def dnf5_config_files() -> list[Path]:
+    """The dnf5 [main] config files in load order (later wins).
+
+    dnf5 loads /usr/share/dnf5/libdnf.conf.d/*.conf, then
+    /etc/dnf/libdnf5.conf.d/*.conf, then /etc/dnf/dnf.conf; options from later
+    files override earlier ones. The user drop-in dir masks a distribution file
+    of the same name; that is moot here because `reposdir=` only sets one
+    option per file and later files overwrite it anyway.
+    """
+    paths: list[Path] = []
+    if DNF_DISTRO_CONF_D.is_dir():
+        paths.extend(sorted(p for p in DNF_DISTRO_CONF_D.glob("*.conf") if p.is_file()))
+    if DNF_USER_CONF_D.is_dir():
+        paths.extend(sorted(p for p in DNF_USER_CONF_D.glob("*.conf") if p.is_file()))
+    paths.append(DNF_MAIN_CONF)
+    return paths
+
+
+def parse_reposdir_from_config(config_files: list[Path]) -> list[Path] | None:
+    """The reposdir list the latest [main] config wins with, or None.
+
+    Returns the last non-empty `reposdir=` value found, which is what dnf5
+    resolves at runtime (the docs say the later file's option wins). Returns
+    None if no config sets the option, so the caller can fall back to the
+    documented default. A malformed or unreadable config is treated as no
+    contribution: the next file still wins.
+    """
+    configured: list[Path] | None = None
+    for path in config_files:
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        parser = configparser.ConfigParser(interpolation=None)
+        try:
+            parser.read_string(text)
+        except configparser.Error:
+            continue
+        if not parser.has_section("main"):
+            continue
+        raw = parser.get("main", "reposdir", fallback="").strip()
+        if not raw:
+            continue
+        configured = [Path(p) for p in re.split(r"[\s,]+", raw) if p]
+    return configured
+
+
+def runtime_reposdir_paths() -> list[Path]:
+    """The reposdir paths dnf5 actually scans at runtime.
+
+    Reads every dnf5 [main] config in load order; if any sets `reposdir=`,
+    that list replaces the documented default. Falls back to the default
+    `DEFAULT_REPOS_DIRS` when no config opts in (#536): a base image that
+    configures a custom reposdir would otherwise slip a `.repo` file past the
+    allowlist gate that scans only the three defaults.
+    """
+    configured = parse_reposdir_from_config(dnf5_config_files())
+    return list(configured) if configured is not None else list(DEFAULT_REPOS_DIRS)
 
 
 def is_installed(package: str) -> bool:
@@ -757,12 +831,14 @@ def main() -> int:
     # enabled RPM repository" claim covers them too. check_mode=False because the
     # runtime image never carries a builder-only repo file; the v4l2loopback
     # stage's fedora-44.repo is never copied into this layer (Containerfile, v4l2
-    # stage). Scan every dnf5 default reposdir (#513): a repo file the base ships
-    # in /etc/distro.repos.d or /usr/share/dnf5/repos.d is enabled at runtime
-    # just as one in /etc/yum.repos.d, so scanning only the first would leave it
-    # invisible to the allowlist.
+    # stage). The scanned dirs are derived from dnf5's actual configuration
+    # rather than the three documented defaults (#513, #536): a base image can
+    # override the list with `reposdir=` in /etc/dnf/dnf.conf or
+    # /etc/dnf/libdnf5.conf.d/*.conf, in which case the hardcoded list misses
+    # the configured paths and a `.repo` file placed there bypasses the
+    # allowlist.
     repo_errors: list[str] = []
-    for repos_dir in RUNTIME_REPOS_DIRS:
+    for repos_dir in runtime_reposdir_paths():
         repo_errors.extend(
             verify_repository_policy(
                 repos_dir, allowed_repos,
