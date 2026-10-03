@@ -423,10 +423,11 @@ The same verifier runs in the Containerfile and on demand, so a local image
 or a CI artifact can be checked after the fact (recipe comment, `Justfile`,
 `check-desktop-contract`):
 
-- **In the image build** — the desktop RUN step ends with
-  `utah-verify-desktop-contract /usr/share/utah/bluefin-desktop.toml`, after
-  branding and services are configured; a contract failure fails the build.
-  The extension verifier runs earlier in the same step.
+- **In the image build** — the final cleanup RUN invokes
+  `/usr/libexec/utah-verify-desktop-contract /usr/share/utah/bluefin-desktop.toml`
+  after cleanup, before bootc lint. The Flatpak file contract requires both
+  runtime parser programs, so cleanup cannot silently strip either consumer.
+  The extension verifier runs earlier during desktop composition.
 - **On demand** — `just check-desktop-contract <ref>` (default
   `localhost/utah:testing`) podman-runs both verifiers inside an
   already-composed image: both verifiers and the desktop contract are
