@@ -588,14 +588,18 @@ class TestLoaderListingParsing(unittest.TestCase):
         self.assertEqual(entries[0].fields["title"], "Utah recovered")
 
 
-def _make_status_with_ostree(checksums):
+def _make_status_with_ostree(checksums, *, serial_map=None):
     """Build a bootc status JSON whose deployments carry the given ostree checksums.
 
     `checksums` maps a slot to its ostree checksum; missing slots are absent
     from the JSON, just as `bootc status` omits absent deployments. The image
     digest is a separate value from the ostree checksum so that the tests
-    exercise both layers independently.
+    exercise both layers independently. `serial_map` lets a test give each
+    slot a distinct `deploySerial` (the boot-manager match key); defaults to
+    0 for every slot, which keeps the legacy single-slot tests working.
     """
+    serials = serial_map or {}
+
     def entry(slot, csum):
         return {
             "image": {
@@ -606,7 +610,7 @@ def _make_status_with_ostree(checksums):
             "ostree": {
                 "checksum": csum,
                 "stateroot": "utah",
-                "deploySerial": 0,
+                "deploySerial": serials.get(slot, 0),
             },
             "pinned": False,
         }
@@ -619,21 +623,24 @@ class TestBootmgrValidation(unittest.TestCase):
         self.csum_base = "1.0" + "a" * 62
         self.csum_cand = "1.0" + "b" * 62
 
-    def _entry_content(self, ostree_csum, linux_path="/vmlinuz-utah", initrd_path="/initramfs-utah.img", options_extra=""):
-        # ostree's BLS entries carry the deployment's commit checksum only
-        # inside the `options` line, as the `<bootcsum>` segment of an
-        # `ostree=/ostree/boot.N/<stateroot>/<bootcsum>/<serial>` path. The
-        # `version` field is the integer deployment index and the filename
-        # is `ostree-<index>-<stateroot>.conf`; neither carries the commit,
-        # which is why the fixture puts it under `options` and not under
-        # the other two.
+    def _entry_content(self, ostree_csum, linux_path="/vmlinuz-utah", initrd_path="/initramfs-utah.img", options_extra="", *, serial=0):
+        # ostree writes an `ostree=/ostree/boot.N/<stateroot>/<bootcsum>/<serial>`
+        # karg into every BLS entry it produces
+        # (src/libostree/ostree-sysroot-deploy.c). The validator anchors on
+        # `(stateroot, deploy_serial)`, the deployment-unique pair; the
+        # `<bootcsum>` segment in the middle is the kernel+initramfs layout
+        # hash (NOT the commit checksum the deployment object exposes as
+        # `ostree.checksum`), so the test fixture uses a placeholder there and
+        # asserts the validator does not look for the commit in the path.
+        # `serial` matches the deployment's `ostree.deploySerial` for the
+        # slot the entry is meant to anchor.
         return (
             f"title Utah {ostree_csum[:8]}\n"
             "version 0\n"
             "machine-id 0123456789abcdef0123456789abcdef\n"
             f"linux {linux_path}\n"
             f"initrd {initrd_path}\n"
-            f"options root=UUID=0000 ro ostree=/ostree/boot.0/utah/{ostree_csum}/0{options_extra}\n"
+            f"options root=UUID=0000 ro ostree=/ostree/boot.0/utah/{ostree_csum[:62]}/{serial}{options_extra}\n"
         )
 
     def _listing(self, entries):
@@ -643,15 +650,18 @@ class TestBootmgrValidation(unittest.TestCase):
         return "".join(parts)
 
     def test_baseline_and_staged_each_have_entries(self):
-        status = _make_status_with_ostree({"booted": self.csum_base, "staged": self.csum_cand})
+        status = _make_status_with_ostree(
+            {"booted": self.csum_base, "staged": self.csum_cand},
+            serial_map={"booted": 0, "staged": 1},
+        )
         listing = self._listing([
             (
                 f"/boot/loader/entries/ostree-utah-{self.csum_base[:8]}.conf",
-                self._entry_content(self.csum_base),
+                self._entry_content(self.csum_base, serial=0),
             ),
             (
                 f"/boot/loader/entries/ostree-utah-{self.csum_cand[:8]}.conf",
-                self._entry_content(self.csum_cand, linux_path="/vmlinuz-staged"),
+                self._entry_content(self.csum_cand, linux_path="/vmlinuz-staged", serial=1),
             ),
         ])
         ok, msg, diag = bootc_lifecycle.validate_bootmgr_entries(status, listing)
@@ -663,11 +673,14 @@ class TestBootmgrValidation(unittest.TestCase):
         # The regression the issue describes: bootc reports a staged
         # deployment, but no BLS entry exists for it, so the next reboot
         # silently boots the old deployment.
-        status = _make_status_with_ostree({"booted": self.csum_base, "staged": self.csum_cand})
+        status = _make_status_with_ostree(
+            {"booted": self.csum_base, "staged": self.csum_cand},
+            serial_map={"booted": 0, "staged": 1},
+        )
         listing = self._listing([
             (
                 f"/boot/loader/entries/ostree-utah-{self.csum_base[:8]}.conf",
-                self._entry_content(self.csum_base),
+                self._entry_content(self.csum_base, serial=0),
             ),
         ])
         ok, msg, diag = bootc_lifecycle.validate_bootmgr_entries(status, listing)
@@ -809,7 +822,10 @@ class TestBootmgrCli(unittest.TestCase):
         csum_base = "1.0" + "a" * 62
         csum_cand = "1.0" + "b" * 62
         status = json.dumps(
-            _make_status_with_ostree({"booted": csum_base, "staged": csum_cand})
+            _make_status_with_ostree(
+                {"booted": csum_base, "staged": csum_cand},
+                serial_map={"booted": 0, "staged": 1},
+            )
         )
         listing = (
             f"=== ENTRY /boot/loader/entries/ostree-utah-{csum_base[:8]}.conf ===\n"

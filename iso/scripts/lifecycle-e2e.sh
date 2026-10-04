@@ -423,7 +423,13 @@ collect_bootmgr_listing() {
     # "finalize wrote nothing". `sudo` is preferred over `2>/dev/null || true`
     # so a permission failure fails loudly and the validator's missing-entry
     # message is honest.
-    ssh_target 'sudo bash -s' <<'INNER'
+    #
+    # The test account is in wheel without NOPASSWD and SSH runs without a
+    # tty, so a bare `sudo bash -s` would die on "a terminal is required to
+    # read the password" before `set -e` lets diagnose_failure run. Feed
+    # the password on stdin and `-S` to sudo the same way `ssh_target_sudo`
+    # does for the non-collect calls.
+    { printf '%s\n' "${TEST_PASSWORD}"; cat <<'INNER'
 shopt -s nullglob
 seen=0
 for root in /boot/loader/entries /boot/efi/loader/entries; do
@@ -438,6 +444,7 @@ for root in /boot/loader/entries /boot/efi/loader/entries; do
 done
 echo "$seen entries captured" >&2
 INNER
+    } | ssh_target 'sudo -S -p "" bash -s'
 }
 
 verify_bootmgr_entries() {
@@ -640,7 +647,13 @@ python3 "${ROOT}/scripts/bootc_lifecycle.py" validate-phase upgraded \
     || diagnose_failure "Upgraded deployment validation failed"
 verify_boot_files upgraded
 
-verify_bootmgr_entries "${WORK}/upgraded-status.json" upgraded "booted"
+# Phase 3 (post-upgrade reboot) must check both `booted` and `rollback`:
+# the upgraded deployment is the booted slot, and the previous baseline
+# (now the rollback target) is in the rollback slot. Checking only
+# `booted` would silently miss the regression where ostree-finalize-staged
+# failed to (re)write the rollback slot's BLS entry -- the booted entry
+# necessarily exists since the guest booted from it.
+verify_bootmgr_entries "${WORK}/upgraded-status.json" upgraded "booted,rollback"
 
 python3 "${ROOT}/scripts/bootc_lifecycle.py" record-diagnostics \
     --output-dir "${EVIDENCE}" \
@@ -681,7 +694,12 @@ python3 "${ROOT}/scripts/bootc_lifecycle.py" validate-phase rollback \
     || diagnose_failure "Rollback verification failed"
 verify_boot_files rollback
 
-verify_bootmgr_entries "${WORK}/rollback-status.json" rollback booted
+# Phase 4 (post-rollback) must check both `booted` and `rollback`: the
+# rolled-back baseline is now the booted slot, and the upgraded deployment
+# (previously booted, now booted-then-replaced) is in the rollback slot.
+# Checking only `booted` would miss the regression where the rollback slot
+# BLS entry went missing after `bootc rollback`.
+verify_bootmgr_entries "${WORK}/rollback-status.json" rollback "booted,rollback"
 
 python3 "${ROOT}/scripts/bootc_lifecycle.py" record-diagnostics \
     --output-dir "${EVIDENCE}" \

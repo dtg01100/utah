@@ -89,10 +89,22 @@ def _extract_slot_deployment(slot_name: str, entry: dict[str, Any] | None) -> De
         stateroot_raw = ostree_obj.get("stateroot") or ostree_obj.get("Stateroot")
         if stateroot_raw:
             stateroot = str(stateroot_raw)
-        serial_raw = ostree_obj.get("deploySerial") or ostree_obj.get("deploy_serial")
+        # `or` short-circuits on a falsy serial (legitimate value: 0), so
+        # prefer `deploySerial` only if it is present (and not None), and
+        # fall back to `deploy_serial` for non-upstream variants. The
+        # BootEntryOstree serde uses `deploy_serial` in snake_case and
+        # `deploySerial` in camelCase depending on the field-rename rule;
+        # try both.
+        serial_raw: object | None
+        if "deploySerial" in ostree_obj:
+            serial_raw = ostree_obj.get("deploySerial")
+        elif "deploy_serial" in ostree_obj:
+            serial_raw = ostree_obj.get("deploy_serial")
+        else:
+            serial_raw = None
         if serial_raw is not None:
             try:
-                deploy_serial = int(serial_raw)
+                deploy_serial = int(serial_raw)  # type: ignore[arg-type]
             except (TypeError, ValueError):
                 deploy_serial = None
 
@@ -288,30 +300,75 @@ def parse_loader_listing(text: str) -> list[LoaderEntry]:
     return entries
 
 
+def _parse_ostree_karg_path(options: str) -> tuple[str, int] | None:
+    """Extract `(stateroot, deploy_serial)` from the BLS `options` line.
+
+    ostree writes an `ostree=/ostree/boot.<N>/<stateroot>/<bootcsum>/<serial>`
+    kernel argument into every BLS entry it generates
+    (src/libostree/ostree-sysroot-deploy.c: `g_strdup_printf ("ostree=/ostree/boot.%d/%s/%s/%d",
+    bootversion, osname, bootcsum, deployserial)`). The `<bootcsum>` segment
+    is a hash of the kernel+initramfs layout (`ostree_deployment_get_bootcsum`),
+    NOT the commit checksum the deployment object exposes as `ostree_checksum`
+    -- matching on it never succeeds and the harness check would always fail
+    at baseline. The deployment-unique pair is `(stateroot, deploy_serial)`,
+    which bootc's `BootEntryOstree` JSON also exposes.
+
+    Returns `None` if no `ostree=` karg is present or the trailing
+    `<serial>` is not an integer.
+    """
+    # The kargs may be space-separated; isolate the ostree= token. The value
+    # may be quoted if it contains a space (it never does in practice), so
+    # tokenising on whitespace is enough.
+    for token in options.split():
+        if not token.startswith("ostree="):
+            continue
+        path = token[len("ostree="):]
+        # Strip an optional surrounding pair of quotes (defensive: ostree
+        # never quotes the path, but other boot managers might).
+        if len(path) >= 2 and path[0] == path[-1] and path[0] in ("'", '"'):
+            path = path[1:-1]
+        segments = [s for s in path.split("/") if s]
+        if len(segments) < 4:
+            return None
+        # ostree's path is /ostree/boot.<N>/<stateroot>/<bootcsum>/<serial>;
+        # segments are [boot<N>, stateroot, bootcsum, serial]. The
+        # deployment-unique pair is stateroot + serial; the bootcsum in the
+        # middle is irrelevant for matching (and is not exposed by bootc's
+        # JSON status, so we cannot compare it anyway).
+        try:
+            serial = int(segments[-1])
+        except ValueError:
+            return None
+        return segments[-3], serial
+    return None
+
+
 def entry_matches_deployment(entry: LoaderEntry, dep: DeploymentInfo) -> bool:
     """Return True if the BLS entry corresponds to the deployment.
 
     ostree's BLS entries are deployment-specific in only one place -- the
     `options` line carries an `ostree=/ostree/boot.N/<stateroot>/<bootcsum>/<serial>`
-    path whose `<bootcsum>` is the commit checksum the deployment object
-    exposes as `ostree_checksum`. The `version` field is the integer
-    deployment index (`g_strdup_printf("%d", n_deployments - index)` in
-    ostree-sysroot-deploy.c) and the filename is `ostree-<index>-<stateroot>.conf`
-    -- neither carries the commit, so a match on either is fiction.
+    path. The `<bootcsum>` segment is the kernel+initramfs layout hash
+    (`ostree_deployment_get_bootcsum`), NOT the commit checksum the
+    deployment exposes as `ostree_checksum`; matching on it never succeeds
+    on a real guest. The deployment-unique pair is
+    `(stateroot, deploy_serial)`, which bootc's `BootEntryOstree` JSON
+    also exposes, so the match anchors on those.
 
-    The match therefore anchors on the `options` line: when the deployment
-    carries an ostree checksum, the entry matches iff that checksum
-    appears as a complete segment of the `ostree=` path. A non-empty
-    `options` without the right `ostree=` segment does not match, and a
-    deployment without an ostree checksum does not match anything.
+    A deployment without a stateroot or deploy_serial cannot anchor the
+    match and returns False (a no-ostree status JSON is what the test
+    suite asserts as the failure path).
     """
-    if not dep.ostree_checksum:
+    if not dep.stateroot or dep.deploy_serial is None:
         return False
     options = entry.fields.get("options", "")
     if not options:
         return False
-    needle = f"/{dep.ostree_checksum}/"
-    return needle in options
+    parsed = _parse_ostree_karg_path(options)
+    if parsed is None:
+        return False
+    stateroot, serial = parsed
+    return stateroot == dep.stateroot and serial == dep.deploy_serial
 
 
 def validate_bootmgr_entries(
@@ -321,13 +378,15 @@ def validate_bootmgr_entries(
 ) -> tuple[bool, str, dict[str, Any]]:
     """Validate systemd-boot entries against bootc status.
 
-    For each requested slot, find the BLS entry whose ostree commit
-    checksum appears in the `options` `ostree=` path, then confirm the
-    entry has the keys the loader actually needs: `linux` for the kernel,
-    and at least one of `initrd` or `options` that the loader can boot. A
-    missing `linux` line is treated as a fatal error because the loader
-    will silently ignore the entry on next reboot, which is exactly the
-    regression the lifecycle suite exists to catch.
+    For each requested slot, find the BLS entry whose `(stateroot,
+    deploy_serial)` matches the deployment (extracted from the
+    `ostree=/ostree/boot.N/<stateroot>/<bootcsum>/<serial>` path in the
+    `options` line), then confirm the entry has the keys the loader
+    actually needs: `linux` for the kernel, and at least one of `initrd`
+    or `options` that the loader can boot. A missing `linux` line is
+    treated as a fatal error because the loader will silently ignore the
+    entry on next reboot, which is exactly the regression the lifecycle
+    suite exists to catch.
 
     The check is per-deployment so a missing entry for one slot (e.g. no
     `rollback` deployment after rollback is the desired state) is reported
@@ -358,13 +417,21 @@ def validate_bootmgr_entries(
             continue
         matches = [e for e in entries if entry_matches_deployment(e, dep)]
         if not matches:
+            label = (
+                f"stateroot={dep.stateroot or 'unknown'}, "
+                f"deploy_serial={dep.deploy_serial if dep.deploy_serial is not None else 'unknown'}, "
+                f"image digest {dep.digest or 'unknown'}"
+            )
             failures.append(
-                f"No BLS entry found for {slot} deployment "
-                f"(ostree checksum {dep.ostree_checksum or 'unknown'}, "
-                f"image digest {dep.digest or 'unknown'})"
+                f"No BLS entry found for {slot} deployment ({label})"
             )
             diag["missing"].append(
-                {"slot": slot, "ostree_checksum": dep.ostree_checksum, "digest": dep.digest}
+                {
+                    "slot": slot,
+                    "stateroot": dep.stateroot,
+                    "deploy_serial": dep.deploy_serial,
+                    "digest": dep.digest,
+                }
             )
             continue
         chosen = matches[0]
