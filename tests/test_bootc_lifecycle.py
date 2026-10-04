@@ -478,5 +478,352 @@ class TestCliInterface(unittest.TestCase):
         self.assertEqual(proc.stdout.strip(), "ghcr.io/projectbluefin/utah")
 
 
+# --- Boot Loader Specification (BLS) entry parsing and validation ---
+#
+# bootc-managed installations write systemd-boot BLS Type 1 entries under
+# /boot/loader/entries on the EFI System Partition. Each entry carries the
+# ostree commit checksum in the `options` line as the `<bootcsum>` segment
+# of an `ostree=/ostree/boot.N/<stateroot>/<bootcsum>/<serial>` path, and
+# the kernel path in `linux`. The lifecycle suite uses these to confirm
+# that finalize-staged actually wrote the boot manager side, not just the
+# bootc status metadata (the issue the regression previously slipped past).
+
+
+class TestLoaderEntryParsing(unittest.TestCase):
+    def test_parse_simple_entry(self):
+        content = (
+            "title Utah (41.20260915.0) 41.20260915.0\n"
+            "version 0\n"
+            "machine-id 0123456789abcdef0123456789abcdef\n"
+            "linux /ostree/utah-41.20260915.0abcdef.../vmlinuz-6.10.0-utah\n"
+            "initrd /ostree/utah-41.20260915.0abcdef.../initramfs-6.10.0-utah.img\n"
+            "options root=UUID=0000 ro ostree=/ostree/boot.0/utah/41.20260915.0abcdef/0\n"
+        )
+        entry = bootc_lifecycle.parse_loader_entry(
+            "ostree-utah-0.conf", content
+        )
+        self.assertEqual(entry.fields["title"], "Utah (41.20260915.0) 41.20260915.0")
+        self.assertEqual(entry.fields["version"], "0")
+        self.assertEqual(entry.fields["linux"], "/ostree/utah-41.20260915.0abcdef.../vmlinuz-6.10.0-utah")
+        self.assertEqual(entry.fields["initrd"], "/ostree/utah-41.20260915.0abcdef.../initramfs-6.10.0-utah.img")
+        self.assertEqual(entry.fields["options"], "root=UUID=0000 ro ostree=/ostree/boot.0/utah/41.20260915.0abcdef/0")
+
+    def test_strips_comments_and_blank_lines(self):
+        content = (
+            "# Boot Loader Specification Type #1 entry\n"
+            "\n"
+            "title Utah\n"
+            "# inline setting with continuation\n"
+            "  trailing-continuation-of-title\n"
+            "version 0\n"
+            "linux /vmlinuz\n"
+        )
+        entry = bootc_lifecycle.parse_loader_entry("ostree-utah-0.conf", content)
+        # Continuation lines (those starting with whitespace) belong to the
+        # prior key per the BLS spec; the parser must not invent a new key
+        # for them and must append them to the previous value verbatim.
+        self.assertEqual(entry.fields["title"], "Utah trailing-continuation-of-title")
+        self.assertNotIn("trailing-continuation-of-title", entry.fields)
+        self.assertEqual(entry.fields["version"], "0")
+        self.assertEqual(entry.fields["linux"], "/vmlinuz")
+
+    def test_first_value_wins(self):
+        # bootc always emits a single value per key, but tolerate a stray
+        # duplicate by treating the first as authoritative so a downstream
+        # comment-like line cannot shadow the real setting.
+        content = (
+            "title Should-win\n"
+            "title Should-lose\n"
+            "linux /vmlinuz-first\n"
+            "linux /vmlinuz-second\n"
+        )
+        entry = bootc_lifecycle.parse_loader_entry("e.conf", content)
+        self.assertEqual(entry.fields["title"], "Should-win")
+        self.assertEqual(entry.fields["linux"], "/vmlinuz-first")
+
+
+class TestLoaderListingParsing(unittest.TestCase):
+    def test_parses_multiple_entries(self):
+        listing = (
+            "=== ENTRY /boot/loader/entries/ostree-utah-0.conf ===\n"
+            "title Utah baseline\n"
+            "version 0\n"
+            "linux /vmlinuz-baseline\n"
+            "initrd /initramfs-baseline.img\n"
+            "options ro ostree=/ostree/boot.0/utah/aaaa/0\n"
+            "=== END ===\n"
+            "=== ENTRY /boot/loader/entries/ostree-utah-1.conf ===\n"
+            "title Utah staged\n"
+            "version 1\n"
+            "linux /vmlinuz-staged\n"
+            "initrd /initramfs-staged.img\n"
+            "options ro ostree=/ostree/boot.0/utah/bbbb/0\n"
+            "=== END ===\n"
+        )
+        entries = bootc_lifecycle.parse_loader_listing(listing)
+        self.assertEqual(len(entries), 2)
+        self.assertEqual(entries[0].filename, "/boot/loader/entries/ostree-utah-0.conf")
+        self.assertEqual(entries[0].fields["linux"], "/vmlinuz-baseline")
+        self.assertEqual(entries[1].filename, "/boot/loader/entries/ostree-utah-1.conf")
+        self.assertEqual(entries[1].fields["linux"], "/vmlinuz-staged")
+
+    def test_empty_listing(self):
+        self.assertEqual(bootc_lifecycle.parse_loader_listing(""), [])
+        self.assertEqual(bootc_lifecycle.parse_loader_listing("\n\n"), [])
+
+    def test_recovers_entry_without_trailing_sentinel(self):
+        # A truncated SSH pipe is the realistic failure mode; the parser must
+        # still surface the partial entry rather than swallow it, otherwise
+        # a network blip would silently demote the validation to "nothing to
+        # check".
+        listing = (
+            "=== ENTRY /boot/loader/entries/ostree-utah-2.conf ===\n"
+            "title Utah recovered\n"
+            "version 0\n"
+            "linux /vmlinuz\n"
+        )
+        entries = bootc_lifecycle.parse_loader_listing(listing)
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0].filename, "/boot/loader/entries/ostree-utah-2.conf")
+        self.assertEqual(entries[0].fields["title"], "Utah recovered")
+
+
+def _make_status_with_ostree(checksums):
+    """Build a bootc status JSON whose deployments carry the given ostree checksums.
+
+    `checksums` maps a slot to its ostree checksum; missing slots are absent
+    from the JSON, just as `bootc status` omits absent deployments. The image
+    digest is a separate value from the ostree checksum so that the tests
+    exercise both layers independently.
+    """
+    def entry(slot, csum):
+        return {
+            "image": {
+                "image": "ghcr.io/projectbluefin/utah",
+                "transport": "registry",
+                "imageDigest": f"sha256:img-{slot:0>60}",
+            },
+            "ostree": {
+                "checksum": csum,
+                "stateroot": "utah",
+                "deploySerial": 0,
+            },
+            "pinned": False,
+        }
+
+    return {"status": {slot: entry(slot, csum) for slot, csum in checksums.items()}}
+
+
+class TestBootmgrValidation(unittest.TestCase):
+    def setUp(self):
+        self.csum_base = "1.0" + "a" * 62
+        self.csum_cand = "1.0" + "b" * 62
+
+    def _entry_content(self, ostree_csum, linux_path="/vmlinuz-utah", initrd_path="/initramfs-utah.img", options_extra=""):
+        # ostree's BLS entries carry the deployment's commit checksum only
+        # inside the `options` line, as the `<bootcsum>` segment of an
+        # `ostree=/ostree/boot.N/<stateroot>/<bootcsum>/<serial>` path. The
+        # `version` field is the integer deployment index and the filename
+        # is `ostree-<index>-<stateroot>.conf`; neither carries the commit,
+        # which is why the fixture puts it under `options` and not under
+        # the other two.
+        return (
+            f"title Utah {ostree_csum[:8]}\n"
+            "version 0\n"
+            "machine-id 0123456789abcdef0123456789abcdef\n"
+            f"linux {linux_path}\n"
+            f"initrd {initrd_path}\n"
+            f"options root=UUID=0000 ro ostree=/ostree/boot.0/utah/{ostree_csum}/0{options_extra}\n"
+        )
+
+    def _listing(self, entries):
+        parts = []
+        for filename, content in entries:
+            parts.append(f"=== ENTRY {filename} ===\n{content}\n=== END ===\n")
+        return "".join(parts)
+
+    def test_baseline_and_staged_each_have_entries(self):
+        status = _make_status_with_ostree({"booted": self.csum_base, "staged": self.csum_cand})
+        listing = self._listing([
+            (
+                f"/boot/loader/entries/ostree-utah-{self.csum_base[:8]}.conf",
+                self._entry_content(self.csum_base),
+            ),
+            (
+                f"/boot/loader/entries/ostree-utah-{self.csum_cand[:8]}.conf",
+                self._entry_content(self.csum_cand, linux_path="/vmlinuz-staged"),
+            ),
+        ])
+        ok, msg, diag = bootc_lifecycle.validate_bootmgr_entries(status, listing)
+        self.assertTrue(ok, msg)
+        self.assertEqual(diag["matches"]["booted"]["filename"], f"/boot/loader/entries/ostree-utah-{self.csum_base[:8]}.conf")
+        self.assertEqual(diag["matches"]["staged"]["filename"], f"/boot/loader/entries/ostree-utah-{self.csum_cand[:8]}.conf")
+
+    def test_missing_entry_for_staged_fails(self):
+        # The regression the issue describes: bootc reports a staged
+        # deployment, but no BLS entry exists for it, so the next reboot
+        # silently boots the old deployment.
+        status = _make_status_with_ostree({"booted": self.csum_base, "staged": self.csum_cand})
+        listing = self._listing([
+            (
+                f"/boot/loader/entries/ostree-utah-{self.csum_base[:8]}.conf",
+                self._entry_content(self.csum_base),
+            ),
+        ])
+        ok, msg, diag = bootc_lifecycle.validate_bootmgr_entries(status, listing)
+        self.assertFalse(ok)
+        self.assertIn("staged", msg)
+        self.assertEqual(diag["missing"][0]["slot"], "staged")
+
+    def test_entry_without_linux_fails(self):
+        status = _make_status_with_ostree({"booted": self.csum_base})
+        listing = self._listing([
+            (
+                f"/boot/loader/entries/ostree-utah-{self.csum_base[:8]}.conf",
+                f"title Utah {self.csum_base[:8]}\nversion 0\noptions root=UUID=0000 ostree=/ostree/boot.0/utah/{self.csum_base}/0\n",
+            ),
+        ])
+        ok, msg, diag = bootc_lifecycle.validate_bootmgr_entries(status, listing)
+        self.assertFalse(ok)
+        self.assertIn("linux", msg)
+        self.assertEqual(diag["malformed"][0]["slot"], "booted")
+
+    def test_rollback_slot_is_optional(self):
+        # After a clean rollback the rollback slot may be empty; the
+        # validator must not flag that as a failure because bootc only
+        # populates it when the next reboot is queued for it.
+        status = _make_status_with_ostree({"booted": self.csum_base})
+        listing = self._listing([
+            (
+                f"/boot/loader/entries/ostree-utah-{self.csum_base[:8]}.conf",
+                self._entry_content(self.csum_base),
+            ),
+        ])
+        ok, msg, _ = bootc_lifecycle.validate_bootmgr_entries(status, listing)
+        self.assertTrue(ok, msg)
+
+    def test_skipped_slot_via_expected_slots(self):
+        # During phase 1 (baseline) only the booted deployment is required,
+        # so a harness that already knows staged is unset must not have the
+        # validator claim otherwise.
+        status = _make_status_with_ostree({"booted": self.csum_base})
+        listing = self._listing([
+            (
+                f"/boot/loader/entries/ostree-utah-{self.csum_base[:8]}.conf",
+                self._entry_content(self.csum_base),
+            ),
+        ])
+        ok, msg, _ = bootc_lifecycle.validate_bootmgr_entries(
+            status, listing, expected_slots=("booted",)
+        )
+        self.assertTrue(ok, msg)
+
+    def test_options_ostree_path_is_the_match_key(self):
+        # ostree carries the deployment's commit checksum only inside the
+        # `options` line's `ostree=/ostree/boot.N/<stateroot>/<bootcsum>/<serial>`
+        # path. `version` is the integer deployment index and the filename
+        # is `ostree-<index>-<stateroot>.conf`; neither carries the commit.
+        # A status JSON without an ostree block cannot anchor the match
+        # because nothing else is deployment-specific in the entry.
+        status = {
+            "status": {
+                "booted": {
+                    "image": {
+                        "image": "ghcr.io/projectbluefin/utah",
+                        "imageDigest": "sha256:" + "9" * 64,
+                    }
+                }
+            }
+        }
+        listing = self._listing([
+            (
+                f"/boot/loader/entries/ostree-utah-{self.csum_base[:8]}.conf",
+                self._entry_content(self.csum_base),
+            ),
+        ])
+        ok, msg, _ = bootc_lifecycle.validate_bootmgr_entries(
+            status, listing, expected_slots=("booted",)
+        )
+        self.assertFalse(ok)  # No ostree data to match against
+
+        # When the status JSON does carry the checksum, the entry's
+        # options line is the only place to find it back.
+        full_status = _make_status_with_ostree({"booted": self.csum_base})
+        ok, msg, _ = bootc_lifecycle.validate_bootmgr_entries(
+            full_status, listing, expected_slots=("booted",)
+        )
+        self.assertTrue(ok, msg)
+
+
+class TestBootmgrCli(unittest.TestCase):
+    def _run_with_files(self, *args, status, listing):
+        # The CLI takes two stdin-or-file arguments, so write each to a
+        # temporary file and pass those paths. stdin can only be one of
+        # them at a time, and conflating the two streams is the easiest way
+        # to test the wrong code path.
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as sfp, tempfile.NamedTemporaryFile(
+            "w", suffix=".txt", delete=False
+        ) as lfp:
+            sfp.write(status)
+            sfp.flush()
+            lfp.write(listing)
+            lfp.flush()
+            try:
+                proc = subprocess.run(
+                    [
+                        sys.executable,
+                        str(ROOT / "scripts" / "bootc_lifecycle.py"),
+                        *args,
+                        "--status",
+                        sfp.name,
+                        "--listing",
+                        lfp.name,
+                    ],
+                    capture_output=True,
+                    text=True,
+                )
+            finally:
+                Path(sfp.name).unlink(missing_ok=True)
+                Path(lfp.name).unlink(missing_ok=True)
+        return proc
+
+    def test_cli_validate_bootmgr_pass(self):
+        csum = "1.0" + "a" * 62
+        status = json.dumps(_make_status_with_ostree({"booted": csum}))
+        listing = (
+            f"=== ENTRY /boot/loader/entries/ostree-utah-{csum[:8]}.conf ===\n"
+            f"title Utah\nversion 0\nlinux /vmlinuz\ninitrd /initrd.img\noptions ro ostree=/ostree/boot.0/utah/{csum}/0\n"
+            f"=== END ===\n"
+        )
+        proc = self._run_with_files(
+            "validate-bootmgr",
+            "--slots",
+            "booted",
+            status=status,
+            listing=listing,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("PASS:", proc.stdout)
+
+    def test_cli_validate_bootmgr_fail(self):
+        csum_base = "1.0" + "a" * 62
+        csum_cand = "1.0" + "b" * 62
+        status = json.dumps(
+            _make_status_with_ostree({"booted": csum_base, "staged": csum_cand})
+        )
+        listing = (
+            f"=== ENTRY /boot/loader/entries/ostree-utah-{csum_base[:8]}.conf ===\n"
+            f"title Utah baseline\nversion 0\nlinux /vmlinuz\ninitrd /initrd.img\noptions ro ostree=/ostree/boot.0/utah/{csum_base}/0\n"
+            f"=== END ===\n"
+        )
+        proc = self._run_with_files(
+            "validate-bootmgr",
+            status=status,
+            listing=listing,
+        )
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("staged", proc.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()
