@@ -228,6 +228,22 @@ starting (#371). Push events to `testing` and pull requests are unaffected:
 `target_sha` is empty for them, so the checkouts fall back to the default
 `github.sha` behavior.
 
+**Limit.** `target_sha` only reaches the two checkouts `build.yml` owns
+(`.github/workflows/build.yml:59` — `contract` — and `:130` —
+`kernel_cache`). The image builds (`build_main`, `build_kernel`) call
+`projectbluefin/actions/.github/workflows/reusable-build.yml@59df69d`,
+whose `build_container` checkout sets no `ref` and the `workflow_call`
+inputs offer no way to pass a SHA through; that checkout therefore
+checks out `github.sha`, the SHA `build.yml` was dispatched against.
+When `inputs.target_sha` matches `github.sha` (the common case for
+`sync-main-to-testing.yml`, which dispatches against `testing` and
+captures the same tip), the tree is consistent. When they differ — a
+re-dispatch from a PR branch with a stale target_sha, say — the run
+builds a mixed tree: contract and kernel_cache at `target_sha`, the
+main image at `github.sha`. Closing this gap needs a `ref` input on
+`reusable-build.yml`'s `build_container` checkout and is tracked
+separately from this PR.
+
 ## ISO LUKS gate and screenshots
 
 `post-testing-e2e.yml` downloads the originating build's digest artifacts.
