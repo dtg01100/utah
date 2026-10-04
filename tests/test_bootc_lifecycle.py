@@ -840,6 +840,24 @@ class TestBootmgrCli(unittest.TestCase):
         self.assertEqual(proc.returncode, 1)
         self.assertIn("staged", proc.stderr)
 
+    def test_cli_validate_bootmgr_rejects_double_stdin(self):
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts" / "bootc_lifecycle.py"),
+                "validate-bootmgr",
+                "--status",
+                "-",
+                "--listing",
+                "-",
+            ],
+            input="{}",
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("cannot both read from stdin", proc.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

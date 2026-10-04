@@ -409,11 +409,6 @@ verify_desktop_and_identity() {
 # harness-side validation joins the phases together and surfaces a missing
 # entry as an explicit failure rather than letting a half-finalized staged
 # deployment boot the old kernel set.
-#
-# Arguments:
-#   $1 status-file: path to the bootc status JSON the phase captured
-#   $2 label: short label written to the evidence file
-#   $3 slots: comma-separated bootc slots the phase must have entries for
 collect_bootmgr_listing() {
     # Read both the ESP `/loader/entries` (bootc writes here) and any
     # XBOOTLDR `/loader/entries` (BLS spec says implementations should also
@@ -424,12 +419,12 @@ collect_bootmgr_listing() {
     # so a permission failure fails loudly and the validator's missing-entry
     # message is honest.
     #
-    # The test account is in wheel without NOPASSWD and SSH runs without a
-    # tty, so a bare `sudo bash -s` would die on "a terminal is required to
-    # read the password" before `set -e` lets diagnose_failure run. Feed
-    # the password on stdin and `-S` to sudo the same way `ssh_target_sudo`
-    # does for the non-collect calls.
-    { printf '%s\n' "${TEST_PASSWORD}"; cat <<'INNER'
+    # The script travels as a `bash -c` argument through `ssh_target_sudo`,
+    # so stdin carries only sudo's password. Never pipe the script to
+    # `bash -s` after the password: if sudo did not consume the password
+    # line (NOPASSWD, cached ticket), bash would execute it as a command.
+    local script
+    script="$(cat <<'INNER'
 shopt -s nullglob
 seen=0
 for root in /boot/loader/entries /boot/efi/loader/entries; do
@@ -444,9 +439,14 @@ for root in /boot/loader/entries /boot/efi/loader/entries; do
 done
 echo "$seen entries captured" >&2
 INNER
-    } | ssh_target 'sudo -S -p "" bash -s'
+)"
+    ssh_target_sudo bash -c "${script}"
 }
 
+# Arguments:
+#   $1 status-file: path to the bootc status JSON the phase captured
+#   $2 label: short label written to the evidence file
+#   $3 slots: comma-separated bootc slots the phase must have entries for
 verify_bootmgr_entries() {
     local status_file="$1"
     local label="$2"
@@ -455,7 +455,8 @@ verify_bootmgr_entries() {
     local diag_file="${EVIDENCE}/bootmgr-${label}.json"
 
     echo "Verifying systemd-boot entries (${label})..."
-    collect_bootmgr_listing > "${listing_file}"
+    collect_bootmgr_listing > "${listing_file}" \
+        || diagnose_failure "Failed to collect systemd-boot entries during ${label}"
     python3 "${ROOT}/scripts/bootc_lifecycle.py" validate-bootmgr \
         --status "${status_file}" \
         --listing "${listing_file}" \

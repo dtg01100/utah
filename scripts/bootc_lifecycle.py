@@ -69,13 +69,12 @@ def _extract_slot_deployment(slot_name: str, entry: dict[str, Any] | None) -> De
     timestamp = img_data.get("timestamp") or entry.get("timestamp")
     pinned = bool(entry.get("pinned", False))
 
-    # bootc's BootEntry exposes an "ostree" object with the commit checksum
-    # (the same string the BLS entry's `options` line carries as the
-    # `<bootcsum>` segment of an `ostree=/ostree/boot.N/<stateroot>/<csum>/<serial>`
-    # path), the stateroot name, and the deploy serial. The boot-manager
-    # checks key off this checksum, not the container image digest, so it
-    # must be parsed here rather than rediscovered later from the BLS
-    # listing.
+    # bootc's BootEntry exposes an "ostree" object with the commit checksum,
+    # the stateroot name, and the deploy serial. The boot-manager checks key
+    # off (stateroot, deploy_serial), which the BLS entry's `options` line
+    # carries in its `ostree=/ostree/boot.N/<stateroot>/<bootcsum>/<serial>`
+    # path. The `<bootcsum>` segment is NOT this commit checksum (see
+    # _parse_ostree_karg_path), so never match on it.
     ostree_obj = entry.get("ostree")
     if not isinstance(ostree_obj, dict):
         ostree_obj = entry.get("Ostree") if isinstance(entry.get("Ostree"), dict) else None
@@ -764,6 +763,9 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
     elif args.subcommand == "validate-bootmgr":
+        if args.status == "-" and args.listing == "-":
+            print("--status and --listing cannot both read from stdin ('-')", file=sys.stderr)
+            return 2
         status_raw = sys.stdin.read() if args.status == "-" else Path(args.status).read_text()
         listing_raw = sys.stdin.read() if args.listing == "-" else Path(args.listing).read_text()
         slots = tuple(s.strip() for s in args.slots.split(",") if s.strip())
