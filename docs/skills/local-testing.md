@@ -360,22 +360,29 @@ This is the surface that an `ostree-finalize-staged` regression could
 silently leave behind: `bootc status` would still report the new
 deployment as queued, but the boot manager would have no entry to chain
 to it and the next reboot would boot the old kernel set. The validator
-matches each deployment against the BLS entry's `options` line by
-parsing the `ostree=/ostree/boot.N/<stateroot>/<bootcsum>/<serial>`
-path and comparing `(stateroot, deploy_serial)` to the bootc status
-JSON's `ostree.stateroot` and `ostree.deploy_serial`. The `<bootcsum>`
-segment is the kernel+initramfs layout hash (ostree's
-`ostree_deployment_get_bootcsum`), NOT the commit checksum the
-deployment exposes as `ostree.checksum`, so an earlier
-commit-checksum match would never succeed on a real guest. Phase 3
-(post-upgrade) and phase 4 (post-rollback) both check the `booted`
-and `rollback` slots so a missing entry for the non-booted slot is
-caught even though the guest necessarily booted from the `booted`
-entry that already exists. The validator then confirms the matched
-entry carries a `linux` line and at least one of `initrd` or `options`.
-Evidence is written to `evidence/loader-entries-<phase>.txt` (the
-raw BLS listing) and `evidence/bootmgr-<phase>.json` (which slot
-matched which entry, and which slots had no entry).
+parses the `ostree=/ostree/boot.N/<stateroot>/<bootcsum>/<serial>` path
+from each BLS entry's `options` line, groups both the expected
+deployments and the captured entries by their `(stateroot,
+deploy_serial)` tuple, and requires the count of entries in each group
+to be at least the count of deployments. A purely-by-serial match would
+let one BLS entry satisfy two deployments (ostree allocates
+`deployserial` per `(osname, commit)`, so two commits with no prior
+deployment at that commit both receive serial 0) and silently miss a
+missing-entry regression; the count check forces a failure in that
+case. The `<bootcsum>` segment in the path is the kernel+initramfs
+layout hash (ostree's `ostree_deployment_get_bootcsum`), NOT the
+commit checksum the deployment exposes as `ostree.checksum`, and is
+intentionally not used as a match key -- bootc's `BootEntryOstree`
+JSON does not expose it. Phase 3 (post-upgrade) and phase 4
+(post-rollback) both check the `booted` and `rollback` slots so a
+missing entry for the non-booted slot is caught even though the guest
+necessarily booted from the `booted` entry that already exists. The
+validator then confirms each matched entry carries a `linux` line and
+at least one of `initrd` or `options`. Evidence is written to
+`evidence/loader-entries-<phase>.txt` (the raw BLS listing) and
+`evidence/bootmgr-<phase>.json` (which slot matched which entry,
+which slots had no entry, and any entries whose `ostree=` karg did not
+parse).
 
 Each phase also runs `iso/scripts/verify-boot-files.sh` as root in the guest
 and saves `evidence/boot-files-<phase>.txt`. For every published OSTree BLS

@@ -342,34 +342,6 @@ def _parse_ostree_karg_path(options: str) -> tuple[str, int] | None:
     return None
 
 
-def entry_matches_deployment(entry: LoaderEntry, dep: DeploymentInfo) -> bool:
-    """Return True if the BLS entry corresponds to the deployment.
-
-    ostree's BLS entries are deployment-specific in only one place -- the
-    `options` line carries an `ostree=/ostree/boot.N/<stateroot>/<bootcsum>/<serial>`
-    path. The `<bootcsum>` segment is the kernel+initramfs layout hash
-    (`ostree_deployment_get_bootcsum`), NOT the commit checksum the
-    deployment exposes as `ostree_checksum`; matching on it never succeeds
-    on a real guest. The deployment-unique pair is
-    `(stateroot, deploy_serial)`, which bootc's `BootEntryOstree` JSON
-    also exposes, so the match anchors on those.
-
-    A deployment without a stateroot or deploy_serial cannot anchor the
-    match and returns False (a no-ostree status JSON is what the test
-    suite asserts as the failure path).
-    """
-    if not dep.stateroot or dep.deploy_serial is None:
-        return False
-    options = entry.fields.get("options", "")
-    if not options:
-        return False
-    parsed = _parse_ostree_karg_path(options)
-    if parsed is None:
-        return False
-    stateroot, serial = parsed
-    return stateroot == dep.stateroot and serial == dep.deploy_serial
-
-
 def validate_bootmgr_entries(
     status_data: str | dict[str, Any],
     listing_text: str,
@@ -377,15 +349,31 @@ def validate_bootmgr_entries(
 ) -> tuple[bool, str, dict[str, Any]]:
     """Validate systemd-boot entries against bootc status.
 
-    For each requested slot, find the BLS entry whose `(stateroot,
-    deploy_serial)` matches the deployment (extracted from the
-    `ostree=/ostree/boot.N/<stateroot>/<bootcsum>/<serial>` path in the
-    `options` line), then confirm the entry has the keys the loader
-    actually needs: `linux` for the kernel, and at least one of `initrd`
-    or `options` that the loader can boot. A missing `linux` line is
-    treated as a fatal error because the loader will silently ignore the
-    entry on next reboot, which is exactly the regression the lifecycle
-    suite exists to catch.
+    Match the deployment's BLS entry by the `(stateroot, deploy_serial)`
+    tuple ostree writes into every BLS entry it generates
+    (`ostree=/ostree/boot.N/<stateroot>/<bootcsum>/<serial>` karg;
+    see _parse_ostree_karg_path). The `<bootcsum>` segment is the
+    kernel+initramfs layout hash and is intentionally NOT used as a match
+    key -- bootc's `BootEntryOstree` JSON does not expose it.
+
+    ostree allocates `deployserial` per (osname, commit), so two
+    deployments with distinct commits but no prior deployment at that
+    commit both receive serial 0. Matching purely by `(stateroot,
+    deploy_serial)` would let one BLS entry satisfy two deployments and
+    silently miss a missing-entry regression. The validator therefore
+    groups both the expected deployments and the captured BLS entries by
+    their `(stateroot, deploy_serial)` tuple and requires the count of
+    entries in each group to be at least the count of deployments; each
+    deployment then claims a unique entry from its group (greedy in slot
+    order). Entries that cannot be parsed (no `ostree=` karg) are surfaced
+    as malformed regardless of how many well-formed entries exist, since
+    any unparseable BLS file on the ESP is a defect.
+
+    Each claimed entry is also checked to carry `linux` (kernel) and at
+    least one of `initrd` or `options` (the loader will silently skip an
+    entry missing those). A missing `linux` line is fatal because the
+    loader will ignore the entry on next reboot, which is the regression
+    the lifecycle suite exists to catch.
 
     The check is per-deployment so a missing entry for one slot (e.g. no
     `rollback` deployment after rollback is the desired state) is reported
@@ -401,56 +389,115 @@ def validate_bootmgr_entries(
         "matches": {},
         "missing": [],
         "malformed": [],
+        "unparseable": [],
     }
 
     failures: list[str] = []
 
+    # Index entries by the (stateroot, deploy_serial) tuple ostree
+    # writes into each BLS entry's `options` line.
+    entry_index: dict[tuple[str, int], list[LoaderEntry]] = {}
+    for entry in entries:
+        parsed = _parse_ostree_karg_path(entry.fields.get("options", ""))
+        if parsed is None:
+            diag["unparseable"].append(entry.to_dict())
+            continue
+        entry_index.setdefault(parsed, []).append(entry)
+
+    if diag["unparseable"]:
+        names = ", ".join(e["filename"] for e in diag["unparseable"])
+        failures.append(
+            f"{len(diag['unparseable'])} BLS entries have no parseable "
+            f"ostree= karg and cannot be matched: {names}"
+        )
+
+    # Group expected deployments by (stateroot, deploy_serial). Slots
+    # without a deployment (e.g. empty rollback after rollback) are PASS
+    # without consuming an entry, matching the per-slot semantics the
+    # harness expects.
+    expected_by_key: dict[tuple[str, int], list[tuple[str, DeploymentInfo]]] = {}
     for slot in expected_slots:
-        dep = deployments.get(slot)
         diag["matches"][slot] = None
-        if not dep:
-            # No deployment recorded in this slot; nothing for the loader to
-            # match against. Surface as PASS rather than failing the phase,
-            # because the harness explicitly skips rollback when bootc has
-            # already rolled back.
+        dep = deployments.get(slot)
+        if dep is None:
             continue
-        matches = [e for e in entries if entry_matches_deployment(e, dep)]
-        if not matches:
-            label = (
-                f"stateroot={dep.stateroot or 'unknown'}, "
-                f"deploy_serial={dep.deploy_serial if dep.deploy_serial is not None else 'unknown'}, "
-                f"image digest {dep.digest or 'unknown'}"
-            )
+        if dep.stateroot is None or dep.deploy_serial is None:
             failures.append(
-                f"No BLS entry found for {slot} deployment ({label})"
-            )
-            diag["missing"].append(
-                {
-                    "slot": slot,
-                    "stateroot": dep.stateroot,
-                    "deploy_serial": dep.deploy_serial,
-                    "digest": dep.digest,
-                }
+                f"{slot} deployment is missing stateroot or deploy_serial "
+                f"and cannot be anchored to a BLS entry "
+                f"(digest {dep.digest or 'unknown'})"
             )
             continue
-        chosen = matches[0]
-        diag["matches"][slot] = chosen.to_dict()
-        linux = chosen.fields.get("linux", "")
-        if not linux:
-            failures.append(
-                f"BLS entry '{chosen.filename}' for {slot} deployment has no 'linux' line"
-            )
-            diag["malformed"].append({"slot": slot, "filename": chosen.filename, "reason": "missing linux"})
+        expected_by_key.setdefault(
+            (dep.stateroot, dep.deploy_serial), []
+        ).append((slot, dep))
+
+    # Validate counts per group, then greedily assign each expected
+    # deployment a unique entry from its group.
+    for key, deps_in_key in expected_by_key.items():
+        stateroot, serial = key
+        have_entries = entry_index.get(key, [])
+        need = len(deps_in_key)
+        have = len(have_entries)
+        if have < need:
+            for slot, dep in deps_in_key:
+                failures.append(
+                    f"No BLS entry found for {slot} deployment "
+                    f"(stateroot={stateroot}, deploy_serial={serial}, "
+                    f"image digest {dep.digest or 'unknown'}; "
+                    f"have {have} BLS entries, need {need})"
+                )
+                diag["missing"].append(
+                    {
+                        "slot": slot,
+                        "stateroot": stateroot,
+                        "deploy_serial": serial,
+                        "digest": dep.digest,
+                    }
+                )
             continue
-        initrd = chosen.fields.get("initrd", "")
-        options = chosen.fields.get("options", "")
-        if not initrd and not options:
-            failures.append(
-                f"BLS entry '{chosen.filename}' for {slot} deployment has neither 'initrd' nor 'options'"
+        # have >= need: assign each expected slot a unique entry in slot
+        # order. The chosen entry's bootcsum on disk belongs to one of the
+        # commits in the group; we cannot distinguish them without
+        # ostree's bootcsum which BootEntryOstree does not expose, so the
+        # greedy assignment is for diagnostics only -- the count check
+        # above is what proves no entry went missing.
+        claimed: set[int] = set()
+        for slot, dep in deps_in_key:
+            chosen_idx = next(
+                (i for i in range(len(have_entries)) if i not in claimed),
+                None,
             )
-            diag["malformed"].append(
-                {"slot": slot, "filename": chosen.filename, "reason": "missing initrd/options"}
-            )
+            if chosen_idx is None:
+                failures.append(
+                    f"Could not assign a unique BLS entry to {slot} "
+                    f"deployment (stateroot={stateroot}, "
+                    f"deploy_serial={serial})"
+                )
+                continue
+            claimed.add(chosen_idx)
+            chosen = have_entries[chosen_idx]
+            diag["matches"][slot] = chosen.to_dict()
+            linux = chosen.fields.get("linux", "")
+            if not linux:
+                failures.append(
+                    f"BLS entry '{chosen.filename}' for {slot} "
+                    f"deployment has no 'linux' line"
+                )
+                diag["malformed"].append(
+                    {"slot": slot, "filename": chosen.filename, "reason": "missing linux"}
+                )
+                continue
+            initrd = chosen.fields.get("initrd", "")
+            options = chosen.fields.get("options", "")
+            if not initrd and not options:
+                failures.append(
+                    f"BLS entry '{chosen.filename}' for {slot} deployment "
+                    f"has neither 'initrd' nor 'options'"
+                )
+                diag["malformed"].append(
+                    {"slot": slot, "filename": chosen.filename, "reason": "missing initrd/options"}
+                )
 
     if failures:
         return False, "; ".join(failures), diag

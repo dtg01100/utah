@@ -481,11 +481,16 @@ class TestCliInterface(unittest.TestCase):
 # --- Boot Loader Specification (BLS) entry parsing and validation ---
 #
 # bootc-managed installations write systemd-boot BLS Type 1 entries under
-# /boot/loader/entries on the EFI System Partition. Each entry carries the
-# ostree commit checksum in the `options` line as the `<bootcsum>` segment
-# of an `ostree=/ostree/boot.N/<stateroot>/<bootcsum>/<serial>` path, and
-# the kernel path in `linux`. The lifecycle suite uses these to confirm
-# that finalize-staged actually wrote the boot manager side, not just the
+# /boot/loader/entries on the EFI System Partition. Each entry carries an
+# `ostree=/ostree/boot.N/<stateroot>/<bootcsum>/<serial>` karg in the
+# `options` line and the kernel path in `linux`. The `<bootcsum>` segment
+# is the kernel+initramfs layout hash
+# (`ostree_deployment_get_bootcsum` in libostree), NOT the ostree commit
+# checksum; bootc's BootEntryOstree JSON does not expose it. The validator
+# therefore anchors on the deployment-unique `(stateroot, deploy_serial)`
+# pair and counts entries per group rather than matching `<bootcsum>` to
+# a commit. The lifecycle suite uses these entries to confirm that
+# finalize-staged actually wrote the boot manager side, not just the
 # bootc status metadata (the issue the regression previously slipped past).
 
 
@@ -701,6 +706,69 @@ class TestBootmgrValidation(unittest.TestCase):
         self.assertIn("linux", msg)
         self.assertEqual(diag["malformed"][0]["slot"], "booted")
 
+    def test_collision_when_two_commits_share_serial(self):
+        # ostree allocates `deployserial` per (osname, commit), not per
+        # deployment: two distinct commits with no prior deployment at that
+        # commit both receive serial 0. A purely-by-serial matcher would
+        # then satisfy both deployments with a single BLS entry and
+        # silently miss a missing-entry regression. The validator must
+        # therefore count entries per (stateroot, deploy_serial) group and
+        # fail when the count of entries is below the count of
+        # deployments in the group.
+        status = _make_status_with_ostree(
+            {"booted": self.csum_base, "staged": self.csum_cand},
+            # Both commits at serial 0 -- the realistic post-upgrade state.
+            serial_map={"booted": 0, "staged": 0},
+        )
+        # Only one BLS entry exists, but two deployments expect one each.
+        listing = self._listing([
+            (
+                f"/boot/loader/entries/ostree-utah-{self.csum_base[:8]}.conf",
+                self._entry_content(self.csum_base, serial=0),
+            ),
+        ])
+        ok, msg, diag = bootc_lifecycle.validate_bootmgr_entries(
+            status, listing, expected_slots=("booted", "staged")
+        )
+        self.assertFalse(ok)
+        # Both deployments reported missing -- the diagnostic must name
+        # both slots so the failure is debuggable.
+        missing_slots = {m["slot"] for m in diag["missing"]}
+        self.assertEqual(missing_slots, {"booted", "staged"})
+        # And both deployments expect a serial-0 entry that wasn't there.
+        for m in diag["missing"]:
+            self.assertEqual(m["deploy_serial"], 0)
+            self.assertEqual(m["stateroot"], "utah")
+
+    def test_two_commits_at_same_serial_each_have_entry(self):
+        # Same setup as the collision test, but both BLS entries exist
+        # (one per commit). The validator must accept this -- this is the
+        # realistic post-upgrade state, where baseline is rollback and
+        # staged becomes booted on next reboot.
+        status = _make_status_with_ostree(
+            {"booted": self.csum_base, "rollback": self.csum_cand},
+            serial_map={"booted": 0, "rollback": 0},
+        )
+        listing = self._listing([
+            (
+                f"/boot/loader/entries/ostree-utah-{self.csum_base[:8]}.conf",
+                self._entry_content(self.csum_base, serial=0),
+            ),
+            (
+                f"/boot/loader/entries/ostree-utah-{self.csum_cand[:8]}.conf",
+                self._entry_content(self.csum_cand, linux_path="/vmlinuz-staged", serial=0),
+            ),
+        ])
+        ok, msg, diag = bootc_lifecycle.validate_bootmgr_entries(
+            status, listing, expected_slots=("booted", "rollback")
+        )
+        self.assertTrue(ok, msg)
+        # Each deployment matched a different entry -- the diagnostic
+        # filenames must be distinct so a reader can tell which is which.
+        booted_match = diag["matches"]["booted"]["filename"]
+        rollback_match = diag["matches"]["rollback"]["filename"]
+        self.assertNotEqual(booted_match, rollback_match)
+
     def test_rollback_slot_is_optional(self):
         # After a clean rollback the rollback slot may be empty; the
         # validator must not flag that as a failure because bootc only
@@ -734,10 +802,12 @@ class TestBootmgrValidation(unittest.TestCase):
     def test_options_ostree_path_is_the_match_key(self):
         # ostree carries the deployment's commit checksum only inside the
         # `options` line's `ostree=/ostree/boot.N/<stateroot>/<bootcsum>/<serial>`
-        # path. `version` is the integer deployment index and the filename
-        # is `ostree-<index>-<stateroot>.conf`; neither carries the commit.
-        # A status JSON without an ostree block cannot anchor the match
-        # because nothing else is deployment-specific in the entry.
+        # path (where `<bootcsum>` is the kernel+initramfs layout hash,
+        # NOT the commit). `version` is the integer deployment index and
+        # the filename is `ostree-<index>-<stateroot>.conf`; neither
+        # carries the commit. A status JSON without an ostree block
+        # cannot anchor the match because nothing else is
+        # deployment-specific in the entry.
         status = {
             "status": {
                 "booted": {
