@@ -416,7 +416,13 @@ rename) and listed in `just check`'s presence assertion. Its option
 loop mirrors Common's exactly — `--` and the first non-option both end
 option parsing — and the remaining positionals are forwarded verbatim,
 so an empty `IMAGE_NAME` keeps its slot instead of promoting
-`IMAGE_TAG` into it.
+`IMAGE_TAG` into it. `IMAGE_NAME` itself falls back to the `IMAGE_NAME`
+environment variable the same way Common's resolver does
+(`${1-${IMAGE_NAME-}}`), so callers that supply the name via the
+environment (without a positional) still hit the `utah*` short-circuit
+(#465); absent positionals are still omitted rather than synthesised
+as empty, so the upstream env fallback also applies on the fall-through
+path.
 
 Two deliberate differences from Common's `report` recipe: the override sets
 `BONEDIGGER_BRAND="🐦 Utah Bug Report"` so the prompt names Utah rather than

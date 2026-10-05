@@ -165,6 +165,53 @@ class UtahImageRepoTests(unittest.TestCase):
         self.assertIn("upstream --default projectbluefin/common  lts-20260101\n",
                       self.upstream_calls_text())
 
+    def test_image_name_env_fallback_short_circuits_utah(self):
+        # Mirror common's IMAGE_NAME="${1-${IMAGE_NAME-}}" binding so the
+        # short-circuit fires for callers that supply the name via the
+        # environment rather than as a positional (projectbluefin/utah#465).
+        # Without this, the shim forwards to common with no positionals,
+        # common's IMAGE_NAME env fallback still routes utah* to its `*` arm,
+        # and the call returns --default instead of projectbluefin/utah.
+        env = dict(self.env, IMAGE_NAME="utah")
+        shim = self.shim_text()
+        result = subprocess.run(
+            ["bash", "-c", shim, "_"],
+            capture_output=True, text=True, env=env,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "projectbluefin/utah")
+        self.assertEqual(self.upstream_calls_text(), "")
+
+    def test_image_name_env_fallback_short_circuits_utah_flavored(self):
+        # Same env fallback path, but with a flavored name. The shim's
+        # `utah*` glob catches utah-gaming the same way it catches utah.
+        env = dict(self.env, IMAGE_NAME="utah-gaming")
+        shim = self.shim_text()
+        result = subprocess.run(
+            ["bash", "-c", shim, "_"],
+            capture_output=True, text=True, env=env,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "projectbluefin/utah")
+        self.assertEqual(self.upstream_calls_text(), "")
+
+    def test_positional_wins_over_image_name_env(self):
+        # common's binding is positional-first with env fallback, so an
+        # explicit positional must beat the env even when the env disagrees.
+        # This guarantees the test double (which sets IMAGE_NAME in os.environ)
+        # cannot pollute tests that pass a positional.
+        env = dict(self.env, IMAGE_NAME="utah")
+        shim = self.shim_text()
+        result = subprocess.run(
+            ["bash", "-c", shim, "_", "--default", "projectbluefin/common",
+             "bluefin", "testing"],
+            capture_output=True, text=True, env=env,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "projectbluefin/common")
+        self.assertIn("upstream --default projectbluefin/common bluefin testing",
+                      self.calls.read_text())
+
     def test_double_dash_positionals_are_forwarded(self):
         # common ends option parsing on `--` and reads the rest as
         # IMAGE_NAME/IMAGE_TAG. The shim claims the same grammar, so the
