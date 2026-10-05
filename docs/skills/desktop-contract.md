@@ -172,12 +172,15 @@ one is pending a composefs boot check (see below):
   ISO path (`iso/scripts/build-iso.sh`, overlay root) is mounted writable,
   so the condition succeeds and the remount still runs there. A blanket
   mask would silence both paths; a condition keyed on the mount state
-  keeps the writable ISO alive. Limitation: the condition is true on any
-  non-composefs boot where `/` is read-only for another reason
-  (`ro` / `rootflags=ro` kargs, an fsck fallback, an incomplete ostree
-  deployment); on those boots the unit is also skipped, which is
-  acceptable here since the upstream remount against a composefs root
-  cannot succeed. The verifier in `tests/test_boot_noise.py` keeps the
+  keeps the writable ISO alive. Limitation: the condition is false on any
+  boot where `/` is read-only, including non-composefs ones (`ro` /
+  `rootflags=ro` kargs, an fsck fallback, an incomplete ostree
+  deployment), so the unit is skipped there too. The skip covers the
+  whole unit, not just `/`: other fstab entries systemd-remount-fs would
+  remount (`/usr`, API VFS such as a `/tmp` tmpfs or `/proc` `hidepid=`)
+  are also left alone. Utah ships no such entries, so only
+  operator-added fstab lines are affected; removing the drop-in restores
+  the unit. The verifier in `tests/test_boot_noise.py` keeps the
   drop-in in sync with the contract.
   Not yet boot-verified: on a composefs VM, confirm
   `systemctl show -p ActiveState,ConditionResult systemd-remount-fs` reports
