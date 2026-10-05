@@ -160,6 +160,18 @@ Each source was fixed at its root, verified on a booted VM, and is pinned by
 - `error loading config '.../50-bluefin-bt-switch.conf': Invalid argument`:
   common's file is comments only, which PipeWire 1.6 rejects. Utah's copy
   adds a no-op `pulse.cmd = [ ]`; drop it once common's copy parses.
+- `systemd-remount-fs.service: mount: /: fsconfig() failed: overlay: No
+  changes allowed in reconfigure` (#585): systemd-remount-fs unconditionally
+  remounts / read-write. On the composefs image `/` is mounted `ro`
+  (`findmnt /` reports `composefs overlay ro,...`), so the remount fails and
+  the unit exits 1, leaving `SystemState=degraded` even when nothing else
+  is wrong. `systemd-remount-fs.service.d/10-utah-composefs-skip.conf` adds
+  `ConditionPathIsReadWrite=/`; composefs's `ST_RDONLY` flag makes the
+  condition fail, systemd skips the unit instead of failing it, and the
+  writable-root bootc path (cf. `iso/live/.../configure-live.sh`,
+  `iso/scripts/build-iso.sh`) still remounts because its `/` is not
+  read-only. A blanket mask would silence both paths; the verifier in
+  `tests/test_boot_noise.py` keeps the drop-in in sync with the contract.
 
 When something new appears in `journalctl -b -p err` on a fresh VM, treat it
 the same way rather than filtering it out of the report.

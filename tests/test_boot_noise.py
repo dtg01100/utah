@@ -43,6 +43,21 @@ class BootNoiseTests(unittest.TestCase):
         # The override must stay a no-op: nothing may be loaded by it.
         self.assertIsNone(re.search(r"^\s*\{\s*cmd", conf.read_text(), re.M))
 
+    def test_remount_fs_skips_on_read_only_root(self):
+        # systemd-remount-fs unconditionally remounts / read-write. On the
+        # composefs image / is mounted ro, so the upstream unit fails with
+        # "overlay: No changes allowed in reconfigure" and degrades the boot
+        # even when nothing else is wrong (#585). The drop-in gates the unit
+        # on / being writable so it is skipped on composefs and still runs on
+        # the writable-root bootc path (iso/live/.../configure-live.sh,
+        # iso/scripts/build-iso.sh).
+        drop_in = SHARED / (
+            "usr/lib/systemd/system/systemd-remount-fs.service.d/"
+            "10-utah-composefs-skip.conf"
+        )
+        self.assertTrue(drop_in.is_file(), f"{drop_in} is missing")
+        self.assertIn("ConditionPathIsReadWrite=/", directives(drop_in))
+
 
 if __name__ == "__main__":
     unittest.main()
