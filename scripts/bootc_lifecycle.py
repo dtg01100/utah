@@ -265,7 +265,6 @@ def parse_loader_listing(text: str) -> list[LoaderEntry]:
         return entries
     current_name: str | None = None
     current_buf: list[str] = []
-    saw_header = False
     for line in text.splitlines():
         if line.startswith(LOADER_LISTING_HEADER):
             if current_name is not None and current_buf:
@@ -280,7 +279,6 @@ def parse_loader_listing(text: str) -> list[LoaderEntry]:
                 rest = rest[:-3].rstrip()
             current_name = rest
             current_buf = []
-            saw_header = True
             continue
         if line.strip() == LOADER_LISTING_END:
             if current_name is not None:
@@ -294,7 +292,7 @@ def parse_loader_listing(text: str) -> list[LoaderEntry]:
     # rather than dropping it silently; the harness wraps the file in
     # `=== END ===` but a partial listing is the usual failure mode when
     # SSH truncates output.
-    if current_name is not None and (current_buf or not saw_header):
+    if current_name is not None and current_buf:
         entries.append(parse_loader_entry(current_name, "\n".join(current_buf)))
     return entries
 

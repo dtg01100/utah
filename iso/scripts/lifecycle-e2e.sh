@@ -410,9 +410,10 @@ verify_desktop_and_identity() {
 # entry as an explicit failure rather than letting a half-finalized staged
 # deployment boot the old kernel set.
 collect_bootmgr_listing() {
-    # Read both the ESP `/loader/entries` (bootc writes here) and any
-    # XBOOTLDR `/loader/entries` (BLS spec says implementations should also
-    # pick those up). The find tolerates either or both being absent.
+    # Read both the ESP `/boot/efi/loader/entries` (bootc writes here) and
+    # the XBOOTLDR `/boot/loader/entries` (BLS spec says implementations
+    # should also pick those up). The find tolerates either or both being
+    # absent.
     # Reads as root, since the ESP is typically fmask=0077 root-only and an
     # EPERM read silently produces an empty listing indistinguishable from
     # "finalize wrote nothing". `sudo` is preferred over `2>/dev/null || true`

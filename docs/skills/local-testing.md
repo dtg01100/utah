@@ -354,8 +354,8 @@ Phase-keyed diagnostics (`evidence/lifecycle-*.json`, `lifecycle-summary.json`)
 and screendumps identify the active deployment and digest at every phase.
 
 After each lifecycle phase the harness also captures the systemd-boot BLS
-Type #1 entries under `/boot/loader/entries/` (and any XBOOTLDR
-`/loader/entries/` if present) and runs `validate-bootmgr` against them.
+Type #1 entries under the ESP `/boot/efi/loader/entries/` (and any XBOOTLDR
+`/boot/loader/entries/` if present) and runs `validate-bootmgr` against them.
 This is the surface that an `ostree-finalize-staged` regression could
 silently leave behind: `bootc status` would still report the new
 deployment as queued, but the boot manager would have no entry to chain
