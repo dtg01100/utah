@@ -182,17 +182,34 @@ class LoaderEntry:
     the ESP root). It is preserved so failure diagnostics can name the file a
     human can inspect. `raw` keeps the original content for callers that want
     to do further matching beyond the parsed keys.
+
+    `paths` is a list of `(path, present)` tuples for the linux/initrd/
+    image lines the harness captured at listing time. A BLS entry that
+    points at a pruned kernel or initrd surfaces here as `(path, False)`,
+    so the validator can fail it as a missing-file regression even when
+    the entry's `linux`/`initrd` lines are syntactically present.
     """
 
     filename: str
     fields: dict[str, str]
     raw: str
+    paths: list[tuple[str, bool]]
 
     def to_dict(self) -> dict[str, Any]:
-        return {"filename": self.filename, "fields": dict(self.fields)}
+        return {
+            "filename": self.filename,
+            "fields": dict(self.fields),
+            "paths": [
+                {"path": p, "present": present} for p, present in self.paths
+            ],
+        }
 
 
-def parse_loader_entry(filename: str, content: str) -> LoaderEntry:
+def parse_loader_entry(
+    filename: str,
+    content: str,
+    paths: list[tuple[str, bool]] | None = None,
+) -> LoaderEntry:
     """Parse a single BLS Type #1 entry file's `key value` lines.
 
     The Boot Loader Specification (BLS) Type #1 format uses one or more
@@ -233,7 +250,7 @@ def parse_loader_entry(filename: str, content: str) -> LoaderEntry:
             current_key = key
         else:
             current_key = None
-    return LoaderEntry(filename=filename, fields=fields, raw=content)
+    return LoaderEntry(filename=filename, fields=fields, raw=content, paths=paths or [])
 
 
 # The ESP listing is captured as a single blob so the lifecycle harness can
@@ -259,17 +276,28 @@ def parse_loader_listing(text: str) -> list[LoaderEntry]:
     sentinel. The closing `===` on the header is part of the format and
     must be stripped before the entry is recorded, otherwise downstream
     diagnostics quote a path that does not exist on disk.
+
+    `STAT <entry-file> <path> present|missing` lines that follow an
+    entry's `=== END ===` are captured into the entry's `paths` list so
+    validate_bootmgr_entries can fail the entry when its kernel or
+    initrd is missing on disk -- not just syntactically absent.
     """
     entries: list[LoaderEntry] = []
     if not text:
         return entries
     current_name: str | None = None
     current_buf: list[str] = []
+    current_paths: list[tuple[str, bool]] = []
     for line in text.splitlines():
         if line.startswith(LOADER_LISTING_HEADER):
+            # Commit the previous entry only when the next one starts,
+            # so STAT lines emitted AFTER `=== END ===` (and before
+            # the next `=== ENTRY` header) attach to the right entry.
             if current_name is not None and current_buf:
                 entries.append(
-                    parse_loader_entry(current_name, "\n".join(current_buf) + "\n")
+                    parse_loader_entry(
+                        current_name, "\n".join(current_buf) + "\n", current_paths
+                    )
                 )
             rest = line[len(LOADER_LISTING_HEADER):].strip()
             # The trailing `===` is the close of the header sentinel, not
@@ -279,21 +307,31 @@ def parse_loader_listing(text: str) -> list[LoaderEntry]:
                 rest = rest[:-3].rstrip()
             current_name = rest
             current_buf = []
+            current_paths = []
             continue
         if line.strip() == LOADER_LISTING_END:
-            if current_name is not None:
-                entries.append(parse_loader_entry(current_name, "\n".join(current_buf)))
-                current_name = None
-                current_buf = []
+            # Do NOT commit here. STAT lines follow; keep current_name,
+            # current_buf, and current_paths until the next `=== ENTRY`
+            # header (or end of input) commits the entry. Also skip
+            # appending `=== END ===` itself to current_buf.
             continue
-        if current_name is not None:
+        # STAT lines are emitted by the harness AFTER `=== END ===`
+        # so they do not belong to current_buf. They attach to the
+        # entry whose filename matches the first token.
+        if current_name is not None and line.startswith("STAT "):
+            parts = line.split(maxsplit=3)
+            if len(parts) == 4 and parts[1] == current_name:
+                current_paths.append((parts[2], parts[3] == "present"))
+            continue
+        if current_name is not None and line.strip() != "":
             current_buf.append(line)
-    # If the producer forgot the trailing sentinel, still recover the entry
-    # rather than dropping it silently; the harness wraps the file in
-    # `=== END ===` but a partial listing is the usual failure mode when
-    # SSH truncates output.
+    # End of input: commit the last in-flight entry. A missing trailing
+    # sentinel still recovers the entry rather than dropping it; the
+    # STAT lines that happened to be emitted are already attached.
     if current_name is not None and current_buf:
-        entries.append(parse_loader_entry(current_name, "\n".join(current_buf)))
+        entries.append(
+            parse_loader_entry(current_name, "\n".join(current_buf), current_paths)
+        )
     return entries
 
 
@@ -325,13 +363,14 @@ def _parse_ostree_karg_path(options: str) -> tuple[str, int] | None:
         if len(path) >= 2 and path[0] == path[-1] and path[0] in ("'", '"'):
             path = path[1:-1]
         segments = [s for s in path.split("/") if s]
+        # segments are [ostree, boot.<N>, stateroot, bootcsum, serial]
+        # (the leading '/' is dropped by the filter). Need at least
+        # four: boot.N, stateroot, bootcsum, serial. The deployment-
+        # unique pair is stateroot + serial; the bootcsum in the
+        # middle is irrelevant for matching (and is not exposed by
+        # bootc's JSON status, so we cannot compare it anyway).
         if len(segments) < 4:
             return None
-        # ostree's path is /ostree/boot.<N>/<stateroot>/<bootcsum>/<serial>;
-        # segments are [boot<N>, stateroot, bootcsum, serial]. The
-        # deployment-unique pair is stateroot + serial; the bootcsum in the
-        # middle is irrelevant for matching (and is not exposed by bootc's
-        # JSON status, so we cannot compare it anyway).
         try:
             serial = int(segments[-1])
         except ValueError:
@@ -496,6 +535,31 @@ def validate_bootmgr_entries(
                 diag["malformed"].append(
                     {"slot": slot, "filename": chosen.filename, "reason": "missing initrd/options"}
                 )
+                continue
+            # Filesystem check: the linux/initrd/image paths the harness
+            # captured must resolve on disk. Without this, a BLS entry
+            # that points at a pruned kernel passes the syntactic check
+            # above and silently breaks next boot. The harness emits
+            # STAT lines for every referenced path; if no STAT was
+            # captured (older listing, harness change), we trust the
+            # syntax check alone and skip the filesystem gate.
+            if chosen.paths:
+                missing = [p for p, present in chosen.paths if not present]
+                if missing:
+                    failures.append(
+                        f"BLS entry '{chosen.filename}' for {slot} "
+                        f"deployment points at missing files: "
+                        f"{missing}"
+                    )
+                    diag["malformed"].append(
+                        {
+                            "slot": slot,
+                            "filename": chosen.filename,
+                            "reason": "missing on disk",
+                            "paths": missing,
+                        }
+                    )
+                    continue
 
     if failures:
         return False, "; ".join(failures), diag

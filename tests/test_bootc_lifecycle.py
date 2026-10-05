@@ -837,6 +837,29 @@ class TestBootmgrValidation(unittest.TestCase):
         )
         self.assertTrue(ok, msg)
 
+    def test_missing_kernel_on_disk_fails_validation(self) -> None:
+        # The harness emits STAT lines that mark kernel/initrd paths as
+        # present or missing on disk. A BLS entry that points at a
+        # pruned kernel has a syntactically valid `linux` line but a
+        # missing file, and the validator must surface that as a
+        # malformed entry rather than passing on syntax alone.
+        status = _make_status_with_ostree({"booted": self.csum_base})
+        filename = f"/boot/loader/entries/ostree-utah-{self.csum_base[:8]}.conf"
+        body = self._entry_content(self.csum_base)
+        listing = (
+            f"=== ENTRY {filename} ===\n{body}\n=== END ===\n"
+            f"STAT {filename} /vmlinuz-utah missing\n"
+            f"STAT {filename} /initramfs-utah.img present\n"
+        )
+        ok, msg, diag = bootc_lifecycle.validate_bootmgr_entries(
+            status, listing, expected_slots=("booted",)
+        )
+        self.assertFalse(ok, msg)
+        self.assertIn("missing files", msg)
+        self.assertIn("/vmlinuz-utah", msg)
+        reasons = [r["reason"] for r in diag["malformed"]]
+        self.assertIn("missing on disk", reasons)
+
 
 class TestBootmgrCli(unittest.TestCase):
     def _run_with_files(self, *args, status, listing):

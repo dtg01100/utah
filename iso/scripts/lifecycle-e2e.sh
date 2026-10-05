@@ -410,15 +410,19 @@ verify_desktop_and_identity() {
 # entry as an explicit failure rather than letting a half-finalized staged
 # deployment boot the old kernel set.
 collect_bootmgr_listing() {
-    # Read both the ESP `/boot/efi/loader/entries` (bootc writes here) and
-    # the XBOOTLDR `/boot/loader/entries` (BLS spec says implementations
-    # should also pick those up). The find tolerates either or both being
-    # absent.
-    # Reads as root, since the ESP is typically fmask=0077 root-only and an
-    # EPERM read silently produces an empty listing indistinguishable from
-    # "finalize wrote nothing". `sudo` is preferred over `2>/dev/null || true`
-    # so a permission failure fails loudly and the validator's missing-entry
-    # message is honest.
+    # Read both the Fedora/bootc layout's BLS root
+    # `/boot/loader/entries` (ostree writes Type #1 entries here per the
+    # sysroot deploy) and the alternative ESP `/boot/efi/loader/entries`
+    # (BLS spec says implementations should also pick those up). The
+    # find tolerates either or both being absent.
+    # Reads as root, since on a vfat ESP (/boot/efi) the loader entries
+    # are fmask=0077 root-only and an EPERM read silently produces an
+    # empty listing indistinguishable from "finalize wrote nothing".
+    # `sudo` is preferred over `2>/dev/null || true` so a permission
+    # failure fails loudly and the validator's missing-entry message is
+    # honest. The ext4 `/boot/loader/entries` is not root-only but the
+    # script reads both roots through one command, so the sudo is
+    # unconditional.
     #
     # The script travels as a `bash -c` argument through `ssh_target_sudo`,
     # so stdin carries only sudo's password. Never pipe the script to
@@ -435,6 +439,24 @@ for root in /boot/loader/entries /boot/efi/loader/entries; do
         printf '=== ENTRY %s ===\n' "$f"
         cat "$f"
         printf '\n=== END ===\n'
+        # After the entry body (so parse_loader_listing's current_buf
+        # does not collect them into the entry), record existence of
+        # the paths the entry references (kernel, initrd, image) so a
+        # pruned kernel/initrd surfaces as missing-on-disk rather than
+        # as a BLS entry pointing at nothing. The STAT markers are
+        # consumed by validate_bootmgr_entries to fail any entry whose
+        # referenced files are not present.
+        for path in $(awk '
+                    /^linux[[:space:]]/  { print $2 }
+                    /^initrd[[:space:]]/ { print $2 }
+                    /^image[[:space:]]/  { print $2 }
+                ' "$f"); do
+            if [ -e "$path" ]; then
+                printf 'STAT %s %s present\n' "$f" "$path"
+            else
+                printf 'STAT %s %s missing\n' "$f" "$path"
+            fi
+        done
         seen=$((seen+1))
     done
 done
