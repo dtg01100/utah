@@ -50,9 +50,10 @@ class BootNoiseTests(unittest.TestCase):
         # composefs image / is mounted ro, so the upstream unit fails with
         # "overlay: No changes allowed in reconfigure" and degrades the boot
         # even when nothing else is wrong (#585). The drop-in gates the unit
-        # on / being writable so it is skipped on composefs and still runs on
-        # the writable-root bootc path (iso/live/.../configure-live.sh,
-        # iso/scripts/build-iso.sh).
+        # on / being writable so it is skipped on composefs. The conventional
+        # bootc install path (iso/live/src/configure-live.sh,
+        # iso/scripts/build-iso.sh) is the one where `/` is not read-only
+        # at the unit's start, so the remount still runs there.
         drop_in = SHARED / (
             "usr/lib/systemd/system/systemd-remount-fs.service.d/"
             "10-utah-composefs-skip.conf"

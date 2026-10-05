@@ -168,11 +168,12 @@ one is pending a composefs boot check (see below):
   the unit exits 1, leaving `SystemState=degraded` even when nothing else
   is wrong. `systemd-remount-fs.service.d/10-utah-composefs-skip.conf` adds
   `ConditionPathIsReadWrite=/`; composefs's `ST_RDONLY` flag makes the
-  condition fail, systemd skips the unit instead of failing it, and the
-  writable-root bootc path (cf. `iso/live/.../configure-live.sh`,
-  `iso/scripts/build-iso.sh`) still remounts because its `/` is not
-  read-only. A blanket mask would silence both paths; the verifier in
-  `tests/test_boot_noise.py` keeps the drop-in in sync with the contract.
+  condition fail, systemd skips the unit instead of failing it. The
+  conventional bootc install (cf. `iso/live/src/configure-live.sh`,
+  `iso/scripts/build-iso.sh`) is the path where `/` is not read-only at
+  that service's start, so the remount still runs there; a blanket mask
+  would silence both. The verifier in `tests/test_boot_noise.py` keeps
+  the drop-in in sync with the contract.
   Not yet boot-verified: on a composefs VM, confirm
   `systemctl show -p ActiveState,ConditionResult systemd-remount-fs` reports
   `inactive`/`no` and `systemctl is-system-running` reports `running`.
