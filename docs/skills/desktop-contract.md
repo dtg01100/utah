@@ -146,8 +146,9 @@ Do not wrap `bootc` in `sh -c` to sequence it: the bare binary's
 
 `ujust report` attaches the current boot's error-priority journal, and on a
 fresh Utah it was nearly all noise, which buried the stack traces in #444.
-Each source was fixed at its root, verified on a booted VM, and is pinned by
-`tests/test_boot_noise.py`:
+Each source was fixed at its root and is pinned by `tests/test_boot_noise.py`.
+All but the `systemd-remount-fs` entry were verified on a booted VM; that
+one is pending a composefs boot check (see below):
 
 - `Failed to resolve group 'plugdev'` / `'nintendo_switch'`, about 100 lines:
   udev rules from libfido2 and common name groups nothing creates.
@@ -172,6 +173,9 @@ Each source was fixed at its root, verified on a booted VM, and is pinned by
   `iso/scripts/build-iso.sh`) still remounts because its `/` is not
   read-only. A blanket mask would silence both paths; the verifier in
   `tests/test_boot_noise.py` keeps the drop-in in sync with the contract.
+  Not yet boot-verified: on a composefs VM, confirm
+  `systemctl show -p ActiveState,ConditionResult systemd-remount-fs` reports
+  `inactive`/`no` and `systemctl is-system-running` reports `running`.
 
 When something new appears in `journalctl -b -p err` on a fresh VM, treat it
 the same way rather than filtering it out of the report.

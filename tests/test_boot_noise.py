@@ -1,7 +1,9 @@
 """Boot and session errors that buried real ones in `ujust report` (#444).
 
-Each fix below was verified on a booted image; these tests pin the shipped
-files so a cleanup cannot silently bring the noise back.
+Each fix below was verified on a booted image, except the
+systemd-remount-fs drop-in (#585), which still needs a composefs boot check.
+These tests pin the shipped files so a cleanup cannot silently bring the
+noise back.
 """
 from pathlib import Path
 import re
