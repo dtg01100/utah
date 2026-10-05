@@ -56,11 +56,9 @@ while (($# > 0)); do
 done
 
 # Mirror common's IMAGE_NAME binding exactly: positional first, env fallback.
-# Without this, a caller that supplies IMAGE_NAME via the environment (and no
-# positional, as ujust changelogs does on its callers' behalf) would see the
-# shim fall through to common and miss the utah* short-circuit, even though
-# common's resolver still routes `IMAGE_NAME=utah*` to its `*` arm and never
-# returns projectbluefin/utah on its own.
+# Without this, a caller that supplies IMAGE_NAME only via the environment
+# (no positional) would fall through to common, whose resolver routes
+# `IMAGE_NAME=utah*` to its `*` arm and never returns projectbluefin/utah.
 NAME="${1-${IMAGE_NAME-}}"
 
 if [[ "$NAME" == utah* ]]; then
