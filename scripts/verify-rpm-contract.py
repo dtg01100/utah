@@ -517,9 +517,20 @@ def repo_security_option_errors(
     section_name: str,
     parser: configparser.ConfigParser,
     source: str,
+    approved_security: dict[str, set[str]] | None = None,
 ) -> list[str]:
-    """Name options that reroute or weaken an allowlisted repository's fetch."""
+    """Name options that reroute or weaken an allowlisted repository's fetch.
+
+    `proxy` and `sslverify=0` reroute or blind the fetch and are rejected for
+    every allowlisted repository. `gpgcheck` and `repo_gpgcheck` disable RPM
+    signature verification; they are rejected unless this repository is named in
+    `[repositories.security]` with the option it is approved to leave disabled
+    -- the digest-pinned utah-packages repo authenticates RPMs by its pinned
+    image, and NVIDIA signs only its repomd.xml, so both are approved to drop a
+    signature check that would otherwise be a gap (#345).
+    """
     errors: list[str] = []
+    approved = approved_security.get(section_name, set()) if approved_security else set()
     proxy = parser.get(section_name, "proxy", fallback="").strip()
     if proxy:
         errors.append(
@@ -534,6 +545,15 @@ def repo_security_option_errors(
             f"sslverify={sslverify}; disabling TLS verification accepts any certificate "
             "the origin presents"
         )
+    for option in ("gpgcheck", "repo_gpgcheck"):
+        value = parser.get(section_name, option, fallback="").strip()
+        if value.lower() in DISABLED_VALUES and option not in approved:
+            errors.append(
+                f"Allowlisted repository '{section_name}' is enabled in {source} with "
+                f"{option}={value}; disabling RPM signature verification accepts unsigned "
+                "metadata or packages; approve this origin's signature drift explicitly "
+                "in [repositories.security] if it is intended"
+            )
     return errors
 
 
@@ -543,18 +563,24 @@ def check_repo_sections(
     allowed_repos: set[str],
     *,
     expected_baseurls: dict[str, tuple[str, ...]] | None,
+    approved_security: dict[str, set[str]] | None = None,
 ) -> list[str]:
     """Apply the allowlist to every section of an already-parsed config."""
     errors: list[str] = []
     for section_name in parser.sections():
         if not is_repo_enabled(parser.get(section_name, "enabled", fallback="1")):
             if section_name in allowed_repos:
-                errors.extend(repo_security_option_errors(section_name, parser, source))
+                errors.extend(
+                    repo_security_option_errors(
+                        section_name, parser, source, approved_security)
+                )
                 if expected_baseurls is not None:
                     errors.extend(repo_pin_errors(section_name, parser, source, expected_baseurls))
             continue
         if section_name in allowed_repos:
-            errors.extend(repo_security_option_errors(section_name, parser, source))
+            errors.extend(
+                repo_security_option_errors(section_name, parser, source, approved_security)
+            )
         baseurl = parser.get(section_name, "baseurl", fallback="").lower()
         is_fedora = "fedora" in section_name.lower() or "fedora" in baseurl
         if is_fedora:
@@ -607,6 +633,7 @@ def verify_repository_policy(
     allowed_repos: set[str],
     *,
     expected_baseurls: dict[str, tuple[str, ...]] | None,
+    approved_security: dict[str, set[str]] | None = None,
     check_mode: bool = False,
 ) -> list[str]:
     """Prove the system exposes only explicitly allowed runtime RPM repositories.
@@ -639,6 +666,7 @@ def verify_repository_policy(
             check_repo_sections(
                 parser, str(repo_file), allowed_repos,
                 expected_baseurls=expected_baseurls,
+                approved_security=approved_security,
             )
         )
     return errors
@@ -858,6 +886,37 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
+    # Approved per-repository signature/TLS drift, from [repositories.security].
+    # A repository named here may leave the listed option (gpgcheck/repo_gpgcheck)
+    # disabled; every allowlisted repository not named here keeps signature
+    # verification on. A key not in the allowlist approves nothing, so reject it
+    # like an unpinned baseurl (#345).
+    repo_security_raw = overlay_data["repositories"].get("security", {})
+    if not isinstance(repo_security_raw, dict):
+        print(
+            f"ERROR: Overlay manifest '{overlay}' has a non-table [repositories.security] "
+            "section",
+            file=sys.stderr,
+        )
+        return 1
+    approved_security: dict[str, set[str]] = {}
+    for repo_id, options in repo_security_raw.items():
+        if not isinstance(options, list):
+            print(
+                f"ERROR: Overlay manifest '{overlay}' lists [repositories.security].{repo_id} "
+                "as a non-list; name the options approved to be disabled",
+                file=sys.stderr,
+            )
+            return 1
+        approved_security[repo_id] = set(options)
+    unapproved_keys = sorted(set(approved_security) - allowed_repos)
+    if unapproved_keys:
+        print(
+            f"ERROR: Overlay manifest '{overlay}' approves signature drift for repositories "
+            f"not in [repositories.allowed]: {', '.join(unapproved_keys)}",
+            file=sys.stderr,
+        )
+        return 1
     factory_packages = set(section(overlay, "factory"))
     factory_parity = set(section(overlay, "factory", "parity"))
     # [factory].packages is the GNOME identity contract; other sections use
@@ -909,7 +968,9 @@ def main() -> int:
             )
         repo_errors = verify_repository_policy(
             args.manifest.parent, allowed_repos,
-            expected_baseurls=repo_baseurls, check_mode=True,
+            expected_baseurls=repo_baseurls,
+            approved_security=approved_security,
+            check_mode=True,
         )
         if repo_errors:
             for err in repo_errors:
@@ -979,7 +1040,8 @@ def main() -> int:
         repo_errors.extend(
             verify_repository_policy(
                 repos_dir, allowed_repos,
-                expected_baseurls=repo_baseurls, check_mode=False,
+                expected_baseurls=repo_baseurls,
+                approved_security=approved_security, check_mode=False,
             )
         )
     # A proxy= or sslverify=0 in the resolved [main] section of dnf.conf/libdnf5.conf
