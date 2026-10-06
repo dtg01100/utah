@@ -423,6 +423,36 @@ class CheckModeTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, result.stderr)
         self.assertIn("ghost-repo", result.stderr)
 
+    def test_check_rejects_unknown_security_option(self) -> None:
+        """A typo or non-approvable option in [repositories.security] fails loudly."""
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            manifest = write_manifest(directory, ["bash"])
+            overlay = write_overlay(
+                directory, repositories=["public-hummingbird-x86_64-rpms"],
+                security={"public-hummingbird-x86_64-rpms": ["gpg_check", "sslverify"]})
+            result = self.run_check(manifest, overlay)
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertIn("ERROR", result.stderr)
+        self.assertIn("'gpg_check'", result.stderr)
+        self.assertIn("'sslverify'", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_check_rejects_non_string_security_option(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            manifest = write_manifest(directory, ["bash"])
+            overlay = write_overlay(
+                directory, repositories=["public-hummingbird-x86_64-rpms"])
+            with overlay.open("a") as handle:
+                handle.write(
+                    "[repositories.security]\n"
+                    "public-hummingbird-x86_64-rpms = [1, { a = 1 }]\n")
+            result = self.run_check(manifest, overlay)
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertIn("ERROR", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
 
 class VerifyModeTests(unittest.TestCase):
     """Without --check the verifier asserts the packages are really installed."""

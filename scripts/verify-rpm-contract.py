@@ -81,6 +81,9 @@ DNF_MAIN_CONF = Path("/etc/dnf/dnf.conf")
 FACTORY_PIN_RE = re.compile(r"^# factory-pin: (?P<digest>\S+)\s*$", re.MULTILINE)
 
 DISABLED_VALUES: frozenset[str] = frozenset({"0", "false", "no", "off"})
+# Fetch-integrity options a repository may be approved to leave disabled via
+# [repositories.security]; proxy= and sslverify=0 are never approvable.
+APPROVABLE_SECURITY_OPTIONS: tuple[str, ...] = ("gpgcheck", "repo_gpgcheck")
 
 
 def section(overlay: Path, name: str, key: str = "packages") -> list[str]:
@@ -545,7 +548,7 @@ def repo_security_option_errors(
             f"sslverify={sslverify}; disabling TLS verification accepts any certificate "
             "the origin presents"
         )
-    for option in ("gpgcheck", "repo_gpgcheck"):
+    for option in APPROVABLE_SECURITY_OPTIONS:
         value = parser.get(section_name, option, fallback="").strip()
         if value.lower() in DISABLED_VALUES and option not in approved:
             errors.append(
@@ -905,6 +908,17 @@ def main() -> int:
             print(
                 f"ERROR: Overlay manifest '{overlay}' lists [repositories.security].{repo_id} "
                 "as a non-list; name the options approved to be disabled",
+                file=sys.stderr,
+            )
+            return 1
+        unknown = sorted(
+            repr(opt) for opt in options if opt not in APPROVABLE_SECURITY_OPTIONS
+        )
+        if unknown:
+            print(
+                f"ERROR: Overlay manifest '{overlay}' lists unknown options in "
+                f"[repositories.security].{repo_id}: {', '.join(unknown)}; only "
+                f"{', '.join(APPROVABLE_SECURITY_OPTIONS)} may be approved",
                 file=sys.stderr,
             )
             return 1

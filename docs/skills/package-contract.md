@@ -120,7 +120,8 @@ verification and are rejected unless the repository is named in
 `[repositories.security]` with the option it is approved to leave disabled. A
 repository not named there must keep signature verification on, and a
 `[repositories.security]` entry for a repository not in `[repositories.allowed]`
-is rejected as approving nothing. The two documented exceptions are
+is rejected as approving nothing, as is any listed option other than
+`gpgcheck` or `repo_gpgcheck`. The two documented exceptions are
 `utah-packages` (RPMs are authenticated by the pinned package image and its OCI
 provenance, not an RPM GPG key, so both signature checks are disabled) and
 `nvidia-container-toolkit` (NVIDIA signs only its repomd.xml, so only package
