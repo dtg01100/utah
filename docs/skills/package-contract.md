@@ -84,44 +84,37 @@ a dumping ground for packages that are merely inconvenient (header comment,
 
 Bluefin's `[multimedia_overrides]` selects replacement builds from negativo17;
 Utah does not enable that repository or consume that section wholesale.
-Do not infer that Hummingbird installs a name just because it appears there.
-The Intel VA-API driver (`libva-intel-media-driver`, providing
-`iHD_drv_video.so`) and `intel-gmmlib` must be requested in Utah's `[parity]`.
-It also requests `intel-mediasdk` and `intel-vpl-gpu-rt` for the two Intel
-runtime generations (#383). Those four are the only `[multimedia_overrides]`
-names Utah requests; the other eight (`libheif`, `libva`, and the six `mesa-*`
-names) are not requested by name. Their origin is whatever the transaction
-resolves: the factory publishes `libva`, and `libva-intel-media-driver` may
-pull it in, so read the resolved origin from the build's
-`/usr/share/utah/package-origins.txt` rather than assuming Fedora's build.
-Utah also requests `libvpl`, which is not an overrides name but a dependency
-of `intel-vpl-gpu-rt`, so the media request is five packages in total.
+`packages/utah.toml` requests four of those twelve names — the Intel VA-API
+driver (`libva-intel-media-driver`, providing `iHD_drv_video.so`),
+`intel-gmmlib`, `intel-mediasdk`, and `intel-vpl-gpu-rt` — plus `libvpl`,
+which is not an overrides name but a dependency of `intel-vpl-gpu-rt` (#383).
+The other eight names (`libheif`, `libva`, the six `mesa-*`) are not
+requested by name; the factory publishes `libva`, and
+`libva-intel-media-driver` may pull it in, so read the resolved origin from
+the image's `/usr/share/utah/package-origins.txt` rather than assuming
+Fedora's build.
 
 `gstreamer1-plugins-bad-free` and `totem-pl-parser` are published package
 names but are omitted from the install request because their dependency
-closures are unsatisfied in the pinned factory inputs: bad-free needs
-`libSoundTouch.so.2`, `libfaad.so.2`, `libopenal.so.1`, and `libsrtp2.so.1`,
-and Totem needs `libuchardet.so.0`. Factory builds of `soundtouch`, `faad2`,
+closures are unsatisfied in the pinned factory inputs (bad-free needs
+`libSoundTouch.so.2`, `libfaad.so.2`, `libopenal.so.1`, `libsrtp2.so.1`;
+Totem needs `libuchardet.so.0`). Factory builds of `soundtouch`, `faad2`,
 `openal-soft`, `libsrtp`, and `uchardet` are prerequisites, tracked by #383.
-These are not absent package names or flaky repository failures; do not add
-them to `[unavailable]` or count them as installed. The pin stays unchanged.
-After closure publication, require `just check-repos` against the reviewed
-pinned inputs before restoring either request.
+Do not add the two names to `[unavailable]` or count them as installed; the
+pin stays unchanged. After closure publication, require `just check-repos`
+against the reviewed pinned inputs before restoring either request.
 
 Package installation does not prove codec functionality. On Intel hardware,
 run `vainfo` against the render device and confirm the iHD driver loads and
-advertises the expected decode profiles. Inspect `avdec_h264`, `openh264dec`,
-and `vah264dec` with `gst-inspect-1.0`, then test a known H.264 sample.
-The audit pin published `gstreamer1-plugin-openh264` but only `noopenh264`;
-resolving that library dependency is not proof of a working decoder.
-
-Remaining #383 gaps at the audit: `gstreamer1-plugin-libav`,
-`gstreamer1-plugins-ugly-free`, `gstreamer1-plugin-dav1d`,
-`papers-thumbnailer`, `gnome-epub-thumbnailer`, `ffmpegthumbnailer`, and
-`gst-thumbnailers`. Consume them only after factory builds and dependency
-closures resolve against Utah's pinned inputs. `totem-pl-parser` is not a
-replacement for those thumbnailers. Full FFmpeg versus `ffmpeg-free` remains
-a maintainer policy decision; keep #383 open for hardware and codec proof.
+advertises the expected decode profiles, then inspect `avdec_h264`,
+`openh264dec`, and `vah264dec` with `gst-inspect-1.0` against a known H.264
+sample. Resolving `gstreamer1-plugin-openh264` is not proof of a working
+decoder; the pin only publishes `noopenh264`. Remaining #383 gaps:
+`gstreamer1-plugin-libav`, `gstreamer1-plugins-ugly-free`,
+`gstreamer1-plugin-dav1d`, `papers-thumbnailer`, `gnome-epub-thumbnailer`,
+`ffmpegthumbnailer`, `gst-thumbnailers`. Full FFmpeg versus `ffmpeg-free`
+remains a maintainer policy decision; keep #383 open for hardware and codec
+proof.
 
 ## Repository policy
 
@@ -146,26 +139,27 @@ unless the repository is named in `[repositories.security]` with the option it
 is approved to leave disabled (`gpgcheck` covers both `gpgcheck` and
 `pkg_gpgcheck`). A repository not named there may not explicitly disable
 signature verification (an omitted option falls back to the dnf5 default and
-is not rejected). The same options set to a disabled value in the resolved dnf5
-`[main]` configuration are always rejected, since they apply to every
+is not rejected). The same options set to a disabled value in the resolved
+dnf5 `[main]` configuration are always rejected, since they apply to every
 repository and no per-repository approval covers them. A
 `[repositories.security]` entry for a repository not in `[repositories.allowed]`
 is rejected as approving nothing, as is any listed option other than
 `gpgcheck` or `repo_gpgcheck`. The two documented exceptions are
-`utah-packages` (RPMs are authenticated by the pinned package image and its OCI
-provenance, not an RPM GPG key, so both signature checks are disabled) and
-`nvidia-container-toolkit` (NVIDIA signs only its repomd.xml, so only package
-signature verification is disabled).
+`utah-packages` (RPMs are authenticated by the pinned package image and its
+OCI provenance, not an RPM GPG key, so both signature checks are disabled)
+and `nvidia-container-toolkit` (NVIDIA signs only its repomd.xml, so only
+package signature verification is disabled).
 
-The install-source identity is single-sourced in `packages/*.repo`. Each repository
-participating in the package install transaction carries a `# utah-install: true`
-annotation (either directly preceding or within the `[section]` header in
-`packages/utah-packages.repo` and `packages/hummingbird.repo`).
-`scripts/install-packages.py` derives the `--enablerepo` set from these annotations
-ordered by priority (ascending), so rebuilds in `utah-packages` (`priority=1`)
-precede base Hummingbird packages (`priority=10`). Repositories without this marker
-(such as `nvidia-container-toolkit` or builder-only `fedora-44`) are excluded from
-the desktop package transaction.
+The install-source identity is single-sourced in `packages/*.repo`: each
+repository participating in the package install transaction carries a
+`# utah-install: true` annotation (directly preceding or within the
+`[section]` header in `packages/utah-packages.repo` and
+`packages/hummingbird.repo`). `scripts/install-packages.py` derives the
+`--enablerepo` set from these annotations in ascending priority order, so
+rebuilds in `utah-packages` (`priority=1`) precede base Hummingbird packages
+(`priority=10`). Repositories without this marker (such as
+`nvidia-container-toolkit` or builder-only `fedora-44`) are excluded from the
+desktop package transaction.
 
 The pinned package image is an RPM repository, not a runtime dependency. It is
 bind-mounted into the package-contract and flavor-specific install RUN steps in
@@ -189,19 +183,19 @@ separately (#527).
   order — drop-ins merged by file name (an `/etc` file masks a same-named
   `/usr/share` file) and applied sorted by file name, then `dnf.conf` — and
   uses the last-set value if any, so a custom reposdir the base image
-  configures is scanned instead of the three defaults (#536).
-- Without `reposdir=` configured, the gate falls back to dnf5's documented
-  defaults — `/etc/yum.repos.d`, `/etc/distro.repos.d`,
-  `/usr/share/dnf5/repos.d` — so a `.repo` file the base ships anywhere in
-  those paths is subject to the same allowlist (#454, #513). A repo file the
-  base ships in `/etc/distro.repos.d` or `/usr/share/dnf5/repos.d` is enabled
-  at runtime exactly as one in `/etc/yum.repos.d`, so scanning only the
-  first would leave it invisible to the gate (#513).
-- A `proxy=` or `sslverify=0` in the resolved `[main]` section of the same dnf5
-  configs applies to every allowlisted repository, so the gate resolves
-  `[main]` the same way (later file wins, an empty `proxy=` clears an earlier
-  one) and fails if the effective value sets a proxy or disables TLS
-  verification (#352).
+  configures is scanned instead of the three defaults (#536). Without
+  `reposdir=` configured, the gate falls back to dnf5's documented defaults
+  — `/etc/yum.repos.d`, `/etc/distro.repos.d`, `/usr/share/dnf5/repos.d` —
+  so a `.repo` file the base ships anywhere in those paths is subject to
+  the same allowlist (#454, #513). A repo file the base ships in
+  `/etc/distro.repos.d` or `/usr/share/dnf5/repos.d` is enabled at runtime
+  exactly as one in `/etc/yum.repos.d`, so scanning only the first would
+  leave it invisible to the gate (#513).
+- A `proxy=` or `sslverify=0` in the resolved `[main]` section of the same
+  dnf5 configs applies to every allowlisted repository, so the gate
+  resolves `[main]` the same way (later file wins, an empty `proxy=` clears
+  an earlier one) and fails if the effective value sets a proxy or
+  disables TLS verification (#352).
 
 ## Printing and scanning gaps
 
@@ -262,18 +256,17 @@ The install transaction follows a strict execution sequence tested in
    for DNF5 compatibility.
 
 On NVIDIA flavors (`IMAGE_FLAVOR=nvidia` or `nvidia-gaming`),
-`scripts/verify-rpm-contract.py` also asserts that the kernel module
-(`extra/nvidia/nvidia.ko`) is present for every bootable kernel in the image and
-that userspace tools (`nvidia-smi`, `nvidia-driver-version`) exist. Determining
-the base kernel release cannot rely solely on `rpm -q kernel`, because `kernel`
-is a metapackage that may not be installed on a minimal bootc base, and rpm queries
-may return nothing or unhelpful text such as `package kernel is not installed`. If
-no release resolves from rpm (empty or whitespace output), or if the resolved
-release does not correspond to a directory under `/usr/lib/modules/<release>`, the
-verifier falls back to the module trees present on disk under `/usr/lib/modules/`
-(excluding the OGC gaming release for the base check). Furthermore, the verifier
-guards against empty release strings, refusing to construct module paths from empty
-releases or emit missing-module errors with empty kernel names.
+`scripts/verify-rpm-contract.py` also asserts the kernel module
+(`extra/nvidia/nvidia.ko`) is present for every bootable kernel and the
+userspace tools (`nvidia-smi`, `nvidia-driver-version`) exist. Determining
+the base kernel release cannot rely solely on `rpm -q kernel`, because
+`kernel` is a metapackage that may not be installed on a minimal bootc base
+and rpm queries may return nothing or `package kernel is not installed`. If
+no release resolves from rpm (empty or whitespace), or if the resolved
+release does not correspond to `/usr/lib/modules/<release>`, the verifier
+falls back to the module trees present under `/usr/lib/modules/` (excluding
+the OGC gaming release for the base check) and refuses to construct module
+paths from empty releases.
 
 ## Failure semantics
 
@@ -304,31 +297,32 @@ default branch, preventing unrelated upstream changes from breaking Utah's CI.
 `.github/workflows/update-bluefin-parity.yml` moves it: nightly it resolves
 Bluefin `main`, and when the upstream contract differs it opens or refreshes a
 single review PR on `automation/bluefin-parity` carrying the new
-`packages/bluefin.toml`, the new SHA here, and the regenerated counts. It never
-auto-merges. Editing the reference by hand is only needed when synchronizing
-`packages/bluefin.toml` outside that workflow.
+`packages/bluefin.toml`, the new SHA here, and the regenerated counts. It
+never auto-merges; hand-editing the reference is for changes outside that
+workflow.
 
-The bump PR does not refresh `baselines/audit-baseline.json`: the audit is
-local-only (it resolves names against the pinned factory repository), so the
-workflow cannot run it. After merging a bump, run
-`just audit-bluefin-parity --write` locally and commit the refreshed baseline;
-until then `just check-audit-parity` reports a stale baseline because the
-recorded `ref` no longer matches `packages/.bluefin-parity-ref`. The bump PR
-body repeats this reminder.
+The bump PR does not refresh `baselines/audit-baseline.json` (the audit is
+local-only, resolving names against the pinned factory repository, so the
+workflow cannot run it). After merging a bump, run
+`just audit-bluefin-parity --write` locally and commit the refreshed
+baseline; until then `just check-audit-parity` reports a stale baseline
+because the recorded `ref` no longer matches `packages/.bluefin-parity-ref`.
+The bump PR body repeats this reminder.
 
-**Do not commit overlay fixes to `automation/bluefin-parity`.** That branch is
-disposable: `create-pull-request` rebuilds it from `main` plus the generated
-working-tree changes on every run and force-resets it whenever the result
-differs, so a `packages/utah.toml` fix pushed onto the open bump PR is
-discarded at the next nightly run while upstream still differs from `main`.
-Raise the overlay change as its own pull request against `main`; the bump PR
-then picks the fix up on its next rebuild.
+**Do not commit overlay fixes to `automation/bluefin-parity`.** That branch
+is disposable: `create-pull-request` rebuilds it from `main` plus the
+generated working-tree changes on every run and force-resets it whenever the
+result differs, so a `packages/utah.toml` fix pushed onto the open bump PR
+is discarded at the next nightly run while upstream still differs from
+`main`. Raise the overlay change as its own pull request against `main`; the
+bump PR then picks the fix up on its next rebuild.
 
 Current counts, per the README "Package parity" section: 61 Bluefin contract
 packages installed, 110 Utah additions (GNOME 51, base-image parity, device
-firmware, desktop services), 8 genuinely unavailable. `scripts/check-doc-counts.py` (part of
-`just check`) recomputes these from the manifests and fails if either
-document drifts from `site/data/packages.json`.
+firmware, desktop services), 8 genuinely unavailable.
+`scripts/check-doc-counts.py` (part of `just check`) recomputes these from
+the manifests and fails if either document drifts from
+`site/data/packages.json`.
 
 ## A section nobody reads installs nothing
 
@@ -357,16 +351,16 @@ then partition each gap name by which repository could supply it.
 The `EXTRACT` script inside that tool globs a closed list of user-visible
 paths (applications, autostarts, sessions, systemd units, `/usr/bin`,
 `/usr/sbin`) and the Bluefin firefox-config defaults
-(`/usr/share/ublue-os/firefox-config/*`, #502). The glob is `*`, not
-`*.js`, because `99-flatpaks.sh` copies the whole directory: a narrower
-pattern would let a non-`.js` file ship unseen. Adding a path means
-adding a glob AND a `KINDS` entry so `write_report()` can classify the
-new rows. `GapTests` in `tests/test_image_baseline.py` exercises missing
-Firefox defaults in the report and recognizes an unowned overlay as shipped.
-For extraction proof, run `extract IMAGE /tmp/surface-check` against a real
-image and inspect the Firefox rows and asset contents; source-string checks
-cannot establish shipping. Never append rows measured from a newer image to
-an older snapshot: `image.txt` must describe the same image as both TSVs.
+(`/usr/share/ublue-os/firefox-config/*`, #502). The glob is `*`, not `*.js`,
+because `99-flatpaks.sh` copies the whole directory: a narrower pattern would
+let a non-`.js` file ship unseen. Adding a path means adding a glob AND a
+`KINDS` entry so `write_report()` can classify the new rows. `GapTests` in
+`tests/test_image_baseline.py` exercises missing Firefox defaults in the
+report and recognizes an unowned overlay as shipped. For extraction proof,
+run `extract IMAGE /tmp/surface-check` against a real image and inspect the
+Firefox rows and asset contents; source-string checks cannot establish
+shipping. Never append rows measured from a newer image to an older
+snapshot: `image.txt` must describe the same image as both TSVs.
 
 `scripts/audit-bluefin-parity.py` is the re-runnable version of that
 pipeline. Every name Bluefin ships that Utah does not install (and does
@@ -389,14 +383,13 @@ Containerfile `PACKAGE_IMAGE_SHA` for the factory OCI; the baseurl in
 cannot disagree on what the repositories offer. No podman run is
 involved — the audit is a static repodata read.
 
-The audit writes `baselines/audit-baseline.json` (only when the
-`--write` flag is passed; the default is report-only, matching the
-2026-09-30 audit's "look before you leap" posture). The check
-subcommand compares the current run to the baseline and exits nonzero when
-a partition grows past the recorded state; a name moving from
-`factory-built` to `hummingbird-available` is a Hummingbird rebuild
-landing and is silent. A name disappearing from the baseline (an operator
-moved it into `[parity]` and closed the gap) is silent too — only new
+The audit writes `baselines/audit-baseline.json` only with `--write`; the
+default is report-only, matching the 2026-09-30 audit's "look before you
+leap" posture. The check subcommand compares the current run to the
+baseline and exits nonzero when a partition grows past the recorded
+state. A name moving from `factory-built` to `hummingbird-available`
+(Hummingbird rebuild landing) is silent; a name disappearing from the
+baseline (an operator moved it into `[parity]`) is silent too — only new
 names that did not exist anywhere in the baseline trigger the gate.
 
 The baseline records the Bluefin ref and factory pin it was captured
@@ -404,20 +397,18 @@ against (`ref` / `factory_ref` in the JSON). `check` compares those back
 against the current audit before it diffs the partitions: a Bluefin-ref or
 factory-pin bump that leaves the package set unchanged would otherwise read
 as "no growth" and pass silently, so it is reported as a stale baseline
-instead. Rewrite the baseline against the new ref with `--write` before the
-gate can meaningfully run. A stale-baseline verdict is reported before any
-partition-growth message, so it is never masked by a growth report, and the
-failing summary line names the stale baseline rather than claiming the
-partitions grew.
+instead. Rewrite the baseline against the new ref with `--write` before
+the gate can meaningfully run. A stale-baseline verdict is reported before
+any partition-growth message, so it is never masked by a growth report,
+and the failing summary line names the stale baseline rather than claiming
+the partitions grew.
 The baseline also records the Hummingbird repo `baseurl` it was captured
-against. A Hummingbird repo URL change moves packages between the
-Hummingbird and factory repodata the audit reads, shifting
-`hummingbird-available` without any name actually being added or
-removed, so the partition diff alone would read "no growth". The check
-compares the current `baseurl` to the recorded one first and reports a
-mismatch as a stale baseline before the partition diff, so the verdict
-is never masked by a growth report; a baseline written before the key
-existed is not invented into a mismatch. Rewrite the baseline against
+against. A URL change shifts packages between the Hummingbird and factory
+repodata the audit reads without any name actually being added or removed,
+so the partition diff alone would read "no growth". The check compares the
+current `baseurl` to the recorded one first and reports a mismatch as a
+stale baseline before the partition diff; a baseline written before the
+key existed is not invented into a mismatch. Rewrite the baseline against
 the new repo with `just audit-bluefin-parity --write`.
 
 Bootstrap is a one-time manual command: on a fresh checkout where
@@ -438,11 +429,9 @@ into the shebang body with `{{args}}`. A `just` shebang recipe receives no
 positional parameters (`$# = 0`), so a `"$@"` loop there is a silent no-op:
 the flags never reach the script and the recipe falls back to report-only
 `run`. Value flags use the `--key=value` form, which is what the recipe's
-`case` re-parses.
-
-The audit needs network (the factory OCI metadata layer and Hummingbird's
-`repodata/`); it is a sibling of `just check-repos`, not part of `just
-check`, which stays offline.
+`case` re-parses. The audit needs network (the factory OCI metadata layer
+and Hummingbird's `repodata/`); it is a sibling of `just check-repos`,
+not part of `just check`, which stays offline.
 
 ## Verification
 
@@ -469,15 +458,15 @@ dependencies. The required Common import deliberately fails if composition
 forgets to preserve the original entry point.
 
 For #394, `device-info` prints a local report when `fpaste` is missing and
-only uploads after confirmation when it is available. Its temporary report is
-private and removed on exit. `changelogs` keeps Common's image/repository
-selection but prints Markdown directly when `glow` is absent; HTTP and parsing
-errors must remain failures. Enrollment reports the unsupported capability
-without running `sudo` or `mokutil`: Utah has no module-signing certificate,
-and shipping one without signing the modules would not fix Secure Boot.
-Signing and enrollment remain tracked by #395. Common's guarded
-`check-idle-power-draw` stays unchanged until the factory supplies `powerstat`.
-These fallbacks do not add packages or enable Fedora runtime repositories.
+only uploads after confirmation when it is available; its temporary report
+is private and removed on exit. `changelogs` keeps Common's image/repository
+selection but prints Markdown directly when `glow` is absent; HTTP and
+parsing errors must remain failures. Enrollment reports the unsupported
+capability without running `sudo` or `mokutil`: Utah has no module-signing
+certificate, and shipping one without signing the modules would not fix
+Secure Boot (tracked by #395). Common's guarded `check-idle-power-draw`
+stays unchanged until the factory supplies `powerstat`. These fallbacks do
+not add packages or enable Fedora runtime repositories.
 
 For #446, `report` overrides Common's `bonedigger-report` recipe so bug
 reports route to `projectbluefin/utah` instead of falling through Common's
