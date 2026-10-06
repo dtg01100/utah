@@ -1123,6 +1123,40 @@ class SupplyChainTests(unittest.TestCase):
         self.assertEqual(
             self.module.repo_security_option_errors("repo", parser, "fedora.repo"), [])
 
+    def test_repo_security_option_errors_flags_pkg_gpgcheck_zero(self) -> None:
+        """pkg_gpgcheck is libdnf5's canonical name for gpgcheck."""
+        parser = self._parser(
+            {"baseurl": "https://a.example.com/$basearch", "pkg_gpgcheck": "0"})
+        errors = self.module.repo_security_option_errors("repo", parser, "fedora.repo")
+        self.assertEqual(len(errors), 1)
+        self.assertIn("pkg_gpgcheck=0", errors[0])
+
+    def test_repo_security_option_errors_flags_pkg_gpgcheck_overriding_gpgcheck(self) -> None:
+        """gpgcheck=1 does not mask a pkg_gpgcheck=0 in the same section."""
+        parser = self._parser(
+            {"baseurl": "https://a.example.com/$basearch", "gpgcheck": "1",
+             "pkg_gpgcheck": "0"})
+        errors = self.module.repo_security_option_errors("repo", parser, "fedora.repo")
+        self.assertEqual(len(errors), 1)
+        self.assertIn("pkg_gpgcheck=0", errors[0])
+
+    def test_repo_security_option_errors_gpgcheck_approval_covers_pkg_gpgcheck(self) -> None:
+        parser = self._parser(
+            {"baseurl": "https://a.example.com/$basearch", "pkg_gpgcheck": "0"})
+        approved = {"repo": {"gpgcheck"}}
+        self.assertEqual(
+            self.module.repo_security_option_errors("repo", parser, "fedora.repo", approved),
+            [],
+        )
+
+    def test_repo_security_option_errors_repo_gpgcheck_approval_not_pkg_gpgcheck(self) -> None:
+        parser = self._parser(
+            {"baseurl": "https://a.example.com/$basearch", "pkg_gpgcheck": "0"})
+        approved = {"repo": {"repo_gpgcheck"}}
+        errors = self.module.repo_security_option_errors("repo", parser, "fedora.repo", approved)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("pkg_gpgcheck", errors[0])
+
     def test_check_repo_sections_flags_unapproved_repo(self) -> None:
         parser = self._parser({"baseurl": "https://a.example.com/$basearch", "enabled": "1"})
         errors = self.module.check_repo_sections(
@@ -1686,6 +1720,40 @@ class MainSectionSecurityTests(unittest.TestCase):
                 self.module.main_section_security_errors([path], "dnf5 [main] config"),
                 [],
             )
+
+    def test_signature_checks_disabled_in_main_are_reported(self) -> None:
+        """gpgcheck/pkg_gpgcheck/repo_gpgcheck=0 in [main] weaken every repository."""
+        for key in ("gpgcheck", "pkg_gpgcheck", "repo_gpgcheck"):
+            with self.subTest(key=key), tempfile.TemporaryDirectory() as tmp:
+                path = self._write_conf(Path(tmp), "10-base.conf", f"[main]\n{key}=0\n")
+                errors = self.module.main_section_security_errors([path], "dnf5 [main] config")
+                self.assertEqual(len(errors), 1)
+                self.assertIn(f"{key}=0", errors[0])
+
+    def test_signature_checks_enabled_in_main_are_clean(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_conf(
+                Path(tmp), "10-base.conf",
+                "[main]\ngpgcheck=1\npkg_gpgcheck=1\nrepo_gpgcheck=1\n")
+            self.assertEqual(
+                self.module.main_section_security_errors([path], "dnf5 [main] config"), [])
+
+    def test_pkg_gpgcheck_zero_in_main_not_masked_by_gpgcheck_one(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_conf(
+                Path(tmp), "10-base.conf", "[main]\ngpgcheck=1\npkg_gpgcheck=0\n")
+            errors = self.module.main_section_security_errors([path], "dnf5 [main] config")
+        self.assertEqual(len(errors), 1)
+        self.assertIn("pkg_gpgcheck=0", errors[0])
+
+    def test_later_file_alias_wins_for_effective_gpgcheck(self) -> None:
+        """A later pkg_gpgcheck=1 re-enables an earlier gpgcheck=0 (aliases share one option)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            early = self._write_conf(directory, "00-base.conf", "[main]\ngpgcheck=0\n")
+            late = self._write_conf(directory, "99-late.conf", "[main]\npkg_gpgcheck=1\n")
+            errors = self.module.main_section_security_errors([early, late], "dnf5 [main] config")
+        self.assertEqual(errors, [])
 
     def test_missing_file_is_clean(self) -> None:
         """A config file that does not exist contributes no options."""

@@ -84,6 +84,14 @@ DISABLED_VALUES: frozenset[str] = frozenset({"0", "false", "no", "off"})
 # Fetch-integrity options a repository may be approved to leave disabled via
 # [repositories.security]; proxy= and sslverify=0 are never approvable.
 APPROVABLE_SECURITY_OPTIONS: tuple[str, ...] = ("gpgcheck", "repo_gpgcheck")
+# The config keys that set each approvable option. libdnf5 treats `gpgcheck` as
+# an alias of its canonical `pkg_gpgcheck` (last assignment wins), so either
+# spelling disables package signature verification and both map to the
+# `gpgcheck` approval.
+SIGNATURE_OPTION_KEYS: dict[str, tuple[str, ...]] = {
+    "gpgcheck": ("gpgcheck", "pkg_gpgcheck"),
+    "repo_gpgcheck": ("repo_gpgcheck",),
+}
 
 
 def section(overlay: Path, name: str, key: str = "packages") -> list[str]:
@@ -241,6 +249,10 @@ def main_section_security_errors(
     libdnf5 drop-in apply to every allowlisted repository, so the per-section
     check in `check_repo_sections` -- which only inspects `.repo` sections and
     never the [main] block -- never inspects them (utah#352, adjacent to #339).
+    `gpgcheck=0`/`pkg_gpgcheck=0`/`repo_gpgcheck=0` in [main] likewise disable
+    signature verification for every repository that does not override them;
+    per-repository approval in [repositories.security] does not cover [main],
+    so a disabled value here is always reported (#345).
     Resolve the [main] options the way libdnf5 does (later file's value wins,
     including an empty `proxy=` clearing an earlier one) and report the
     effective values, using the same case-sensitive, `=`-only parsing as
@@ -250,6 +262,7 @@ def main_section_security_errors(
     """
     proxy = ""
     sslverify = ""
+    signature: dict[str, tuple[str, str]] = {}
     for path in config_files:
         if not path.is_file():
             continue
@@ -273,6 +286,18 @@ def main_section_security_errors(
             proxy = parser.get("main", "proxy").strip()
         if parser.has_option("main", "sslverify"):
             sslverify = parser.get("main", "sslverify").strip()
+        for approval, keys in SIGNATURE_OPTION_KEYS.items():
+            values = [
+                (key, parser.get("main", key).strip())
+                for key in keys
+                if parser.has_option("main", key)
+            ]
+            if not values:
+                continue
+            # configparser does not keep the relative order of two alias keys
+            # in one file, so a disabled spelling wins (fail closed).
+            disabled = [kv for kv in values if kv[1].lower() in DISABLED_VALUES]
+            signature[approval] = disabled[0] if disabled else values[-1]
     errors: list[str] = []
     if proxy:
         errors.append(
@@ -284,6 +309,13 @@ def main_section_security_errors(
             f"[main] in {source} sets sslverify={sslverify}; disabling TLS verification "
             "accepts any certificate every allowlisted repository presents"
         )
+    for key, value in signature.values():
+        if value.lower() in DISABLED_VALUES:
+            errors.append(
+                f"[main] in {source} sets {key}={value}; disabling RPM signature "
+                "verification in [main] applies to every allowlisted repository; "
+                "approve a repository's signature drift in [repositories.security] instead"
+            )
     return errors
 
 
@@ -525,8 +557,8 @@ def repo_security_option_errors(
     """Name options that reroute or weaken an allowlisted repository's fetch.
 
     `proxy` and `sslverify=0` reroute or blind the fetch and are rejected for
-    every allowlisted repository. `gpgcheck` and `repo_gpgcheck` disable RPM
-    signature verification; they are rejected unless this repository is named in
+    every allowlisted repository. `gpgcheck` (or its libdnf5 alias
+    `pkg_gpgcheck`) and `repo_gpgcheck` disable RPM signature verification; they are rejected unless this repository is named in
     `[repositories.security]` with the option it is approved to leave disabled
     -- the digest-pinned utah-packages repo authenticates RPMs by its pinned
     image, and NVIDIA signs only its repomd.xml, so both are approved to drop a
@@ -548,15 +580,20 @@ def repo_security_option_errors(
             f"sslverify={sslverify}; disabling TLS verification accepts any certificate "
             "the origin presents"
         )
-    for option in APPROVABLE_SECURITY_OPTIONS:
-        value = parser.get(section_name, option, fallback="").strip()
-        if value.lower() in DISABLED_VALUES and option not in approved:
-            errors.append(
-                f"Allowlisted repository '{section_name}' is enabled in {source} with "
-                f"{option}={value}; disabling RPM signature verification accepts unsigned "
-                "metadata or packages; approve this origin's signature drift explicitly "
-                "in [repositories.security] if it is intended"
-            )
+    for approval, keys in SIGNATURE_OPTION_KEYS.items():
+        if approval in approved:
+            continue
+        # Every spelling is checked: pkg_gpgcheck=0 disables package signature
+        # verification just as gpgcheck=0 does, whichever key comes last.
+        for key in keys:
+            value = parser.get(section_name, key, fallback="").strip()
+            if value.lower() in DISABLED_VALUES:
+                errors.append(
+                    f"Allowlisted repository '{section_name}' is enabled in {source} with "
+                    f"{key}={value}; disabling RPM signature verification accepts unsigned "
+                    "metadata or packages; approve this origin's signature drift explicitly "
+                    f"as '{approval}' in [repositories.security] if it is intended"
+                )
     return errors
 
 
@@ -891,8 +928,8 @@ def main() -> int:
         return 1
     # Approved per-repository signature/TLS drift, from [repositories.security].
     # A repository named here may leave the listed option (gpgcheck/repo_gpgcheck)
-    # disabled; every allowlisted repository not named here keeps signature
-    # verification on. A key not in the allowlist approves nothing, so reject it
+    # disabled; no allowlisted repository not named here may explicitly disable
+    # signature verification. A key not in the allowlist approves nothing, so reject it
     # like an unpinned baseurl (#345).
     repo_security_raw = overlay_data["repositories"].get("security", {})
     if not isinstance(repo_security_raw, dict):
