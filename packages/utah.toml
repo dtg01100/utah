@@ -568,8 +568,9 @@ nvidia-container-toolkit = ["https://nvidia.github.io/libnvidia-container/stable
 # repo_gpgcheck=0 on any allowlisted repository; a repository named here with an
 # option is the documented, intentional exception for that option ("gpgcheck"
 # also covers its libdnf5 alias pkg_gpgcheck). No allowlisted repository not
-# named here may explicitly disable signature verification (#345). The value names the option approved to be disabled, not its value, so
-# the approval cannot drift to a weaker spelling.
+# named here may explicitly disable signature verification (#345). The value
+# names the option approved to be disabled, not its value, so the approval
+# cannot drift to a weaker spelling.
 [repositories.security]
 # utah-packages RPMs are authenticated by the pinned package image and its OCI
 # provenance, not by an RPM GPG key, so both package and metadata signature

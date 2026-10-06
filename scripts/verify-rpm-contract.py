@@ -558,7 +558,8 @@ def repo_security_option_errors(
 
     `proxy` and `sslverify=0` reroute or blind the fetch and are rejected for
     every allowlisted repository. `gpgcheck` (or its libdnf5 alias
-    `pkg_gpgcheck`) and `repo_gpgcheck` disable RPM signature verification; they are rejected unless this repository is named in
+    `pkg_gpgcheck`) and `repo_gpgcheck` disable RPM signature verification;
+    they are rejected unless this repository is named in
     `[repositories.security]` with the option it is approved to leave disabled
     -- the digest-pinned utah-packages repo authenticates RPMs by its pinned
     image, and NVIDIA signs only its repomd.xml, so both are approved to drop a
