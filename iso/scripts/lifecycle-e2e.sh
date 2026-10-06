@@ -432,9 +432,11 @@ collect_bootmgr_listing() {
     script="$(cat <<'INNER'
 shopt -s nullglob
 seen=0
-for root in /boot/loader/entries /boot/efi/loader/entries; do
-    [ -d "$root" ] || continue
-    for f in "$root"/*.conf; do
+for entries_dir in /boot/loader/entries /boot/efi/loader/entries; do
+    [ -d "$entries_dir" ] || continue
+    boot_root="${entries_dir%/loader/entries}"
+    [ -n "$boot_root" ] || boot_root="/"
+    for f in "$entries_dir"/*.conf; do
         [ -f "$f" ] || continue
         printf '=== ENTRY %s ===\n' "$f"
         cat "$f"
@@ -445,13 +447,15 @@ for root in /boot/loader/entries /boot/efi/loader/entries; do
         # pruned kernel/initrd surfaces as missing-on-disk rather than
         # as a BLS entry pointing at nothing. The STAT markers are
         # consumed by validate_bootmgr_entries to fail any entry whose
-        # referenced files are not present.
+        # referenced files are not present. BLS Type #1 paths are
+        # partition-relative, so resolve them under the entry's boot root.
         for path in $(awk '
                     /^linux[[:space:]]/  { print $2 }
                     /^initrd[[:space:]]/ { print $2 }
                     /^image[[:space:]]/  { print $2 }
                 ' "$f"); do
-            if [ -e "$path" ]; then
+            target="${boot_root}/${path#/}"
+            if [ -e "$target" ]; then
                 printf 'STAT %s %s present\n' "$f" "$path"
             else
                 printf 'STAT %s %s missing\n' "$f" "$path"
