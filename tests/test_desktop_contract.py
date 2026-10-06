@@ -429,7 +429,7 @@ class ServiceMaskParityTests(unittest.TestCase):
         self.assertGreater(len(enabled), 0, "contract must list at least one enabled service")
 
         skill_doc = (ROOT / "docs/skills/desktop-contract.md").read_text()
-        services_heading = skill_doc.split("`[services]`", 1)[1].split("\n- ", 1)[0]
+        services_heading = skill_doc.split("`[services]`", 1)[1].split("\n\n", 1)[0]
         missing = [unit for unit in enabled if unit not in services_heading]
         self.assertEqual(
             missing, [],
