@@ -83,15 +83,15 @@ a dumping ground for packages that are merely inconvenient (header comment,
 ## Media packages and codec parity
 
 Bluefin's `[multimedia_overrides]` selects replacement builds from negativo17;
-Utah does not enable that repository or consume that section wholesale.
+Utah does not enable that repository or consume that section wholesale. Do not
+infer that Hummingbird installs a name just because it appears there.
 `packages/utah.toml` requests four of those twelve names — the Intel VA-API
 driver (`libva-intel-media-driver`, providing `iHD_drv_video.so`),
-`intel-gmmlib`, `intel-mediasdk`, and `intel-vpl-gpu-rt` — plus `libvpl`,
-which is not an overrides name but a dependency of `intel-vpl-gpu-rt` (#383).
-The other eight names (`libheif`, `libva`, the six `mesa-*`) are not
-requested by name; the factory publishes `libva`, and
-`libva-intel-media-driver` may pull it in, so read the resolved origin from
-the image's `/usr/share/utah/package-origins.txt` rather than assuming
+`intel-gmmlib`, `intel-mediasdk`, and `intel-vpl-gpu-rt` — plus `libvpl`, which
+is not an overrides name but a dependency of `intel-vpl-gpu-rt` (#383). The
+other eight (`libheif`, `libva`, six `mesa-*`) are not requested by name; the
+factory publishes `libva`, and `libva-intel-media-driver` may pull it in, so
+read the resolved origin from `/usr/share/utah/package-origins.txt`, not
 Fedora's build.
 
 `gstreamer1-plugins-bad-free` and `totem-pl-parser` are published package
@@ -104,17 +104,18 @@ Do not add the two names to `[unavailable]` or count them as installed; the
 pin stays unchanged. After closure publication, require `just check-repos`
 against the reviewed pinned inputs before restoring either request.
 
-Package installation does not prove codec functionality. On Intel hardware,
-run `vainfo` against the render device and confirm the iHD driver loads and
+Package installation does not prove codec functionality. On Intel hardware, run
+`vainfo` against the render device and confirm the iHD driver loads and
 advertises the expected decode profiles, then inspect `avdec_h264`,
 `openh264dec`, and `vah264dec` with `gst-inspect-1.0` against a known H.264
 sample. Resolving `gstreamer1-plugin-openh264` is not proof of a working
 decoder; the pin only publishes `noopenh264`. Remaining #383 gaps:
 `gstreamer1-plugin-libav`, `gstreamer1-plugins-ugly-free`,
 `gstreamer1-plugin-dav1d`, `papers-thumbnailer`, `gnome-epub-thumbnailer`,
-`ffmpegthumbnailer`, `gst-thumbnailers`. Full FFmpeg versus `ffmpeg-free`
-remains a maintainer policy decision; keep #383 open for hardware and codec
-proof.
+`ffmpegthumbnailer`, `gst-thumbnailers`; consume them only after factory builds
+and dependency closures resolve against Utah's pinned inputs (`totem-pl-parser`
+does not replace these thumbnailers). Full FFmpeg versus `ffmpeg-free` remains
+a maintainer policy decision and #383 stays open for hardware and codec proof.
 
 ## Repository policy
 
@@ -258,15 +259,15 @@ The install transaction follows a strict execution sequence tested in
 On NVIDIA flavors (`IMAGE_FLAVOR=nvidia` or `nvidia-gaming`),
 `scripts/verify-rpm-contract.py` also asserts the kernel module
 (`extra/nvidia/nvidia.ko`) is present for every bootable kernel and the
-userspace tools (`nvidia-smi`, `nvidia-driver-version`) exist. Determining
-the base kernel release cannot rely solely on `rpm -q kernel`, because
-`kernel` is a metapackage that may not be installed on a minimal bootc base
-and rpm queries may return nothing or `package kernel is not installed`. If
-no release resolves from rpm (empty or whitespace), or if the resolved
-release does not correspond to `/usr/lib/modules/<release>`, the verifier
-falls back to the module trees present under `/usr/lib/modules/` (excluding
-the OGC gaming release for the base check) and refuses to construct module
-paths from empty releases.
+userspace tools (`nvidia-smi`, `nvidia-driver-version`) exist. Determining the
+base kernel release cannot rely solely on `rpm -q kernel`, because `kernel` is
+a metapackage that may not be installed on a minimal bootc base and rpm queries
+may return nothing or `package kernel is not installed`. If no release resolves
+from rpm (empty or whitespace), or if the resolved release does not correspond
+to `/usr/lib/modules/<release>`, the verifier falls back to the module trees
+present under `/usr/lib/modules/` (excluding the OGC gaming release for the
+base check) and refuses to construct module paths from empty releases or emit
+missing-module errors with empty kernel names.
 
 ## Failure semantics
 
