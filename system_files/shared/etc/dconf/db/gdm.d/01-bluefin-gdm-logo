@@ -11,12 +11,11 @@
 # Root-cause ticket: #398. This dconf override is the working fix and does
 # not need the overlay PNG to land on disk.
 #
-# The image is a small Bluefin wordmark (150x61), not the full-size
+# The image is a small Bluefin wordmark (150x64), not the full-size
 # bluefin-logos/bluefin.png (372x493): gnome-shell draws the greeter logo at
 # its natural size, so the mascot artwork fills the login screen. The file is
-# a copy of Common's Bluefin-branded fedora-gdm-logo.png, shipped under a
-# Utah-owned name so no logos RPM (fedora-logos, generic-logos) owns or erases
-# it. That the PNG exists is enforced by the [branding].files entry in
+# shipped under a Utah-owned name so no logos RPM (fedora-logos,
+# generic-logos) owns or erases it. That the PNG exists is enforced by the [branding].files entry in
 # contracts/bluefin-desktop.toml, not by dconf: the value below is an opaque
 # string to dconf and a dangling path compiles without complaint.
 #
