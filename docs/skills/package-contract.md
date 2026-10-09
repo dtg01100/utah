@@ -158,18 +158,10 @@ provenance, not an RPM GPG key, so both signature checks are disabled) and
 signature verification is disabled).
 
 A third axis, the **trust anchor**, is gated by `[repositories.gpgkeys]` (#617).
-`gpgkey=` rewrites where the repository fetches its signing key from; an unpinned
+`gpgkey=` rewrites where a repository fetches signing keys from; an unpinned
 entry lets a drop-in reroute the trust anchor to an attacker-controlled key
-server and accept any signature. Any repository section that sets `gpgkey=`
-must declare every key URL in `[repositories.gpgkeys]` -- this applies to every
-`.repo` the gate scans, including disabled and non-allowlisted ones, so a base
-image `.repo` shipping `gpgkey=` for an unpinned id fails the build; a drop-in
-(`/etc/dnf/repos.override.d` or `/usr/share/dnf5/repos.override.d`) must not
-set `gpgkey=` on any section, since the gate cannot know which keys the
-underlying `.repo` shipped. A `[repositories.gpgkeys]` entry for a repository
-not in `[repositories.allowed]` is rejected as approving nothing, mirroring
-`[repositories.security]`. `utah-packages` is absent (its `.repo` declares no
-`gpgkey=`; the OCI pin is the trust anchor). See
+server. All sections declaring `gpgkey=` must match `[repositories.gpgkeys]`;
+drop-ins cannot set `gpgkey=` on any section. Details and override rules live in
 [`references/repository-authenticity.md`](references/repository-authenticity.md).
 
 The install-source identity is single-sourced in `packages/*.repo`. Each repository
