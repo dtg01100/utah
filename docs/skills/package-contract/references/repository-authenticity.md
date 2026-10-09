@@ -3,7 +3,7 @@
 The `[repositories.gpgkeys]` section pins the RPM GPG key URLs each allowlisted
 repository may declare, and the `scripts/verify-rpm-contract.py` gate refuses
 `gpgkey=` outside that set. The policy is summarised in
-[`../README.md`](../README.md); this reference is the operator-facing detail.
+[`../../package-contract.md`](../../package-contract.md); this reference is the operator-facing detail.
 
 ## Why a third axis
 
@@ -59,10 +59,12 @@ the check:
 The check is reached from `check_repo_sections` **before** every `continue`
 branch, so a partial override (`[id]\npriority=1\ngpgkey=https://attacker/key`)
 that would otherwise pass through the `enabled` check is rejected. A
-wildcard override (`[*]\ngpgkey=…`) is rejected by `glob_override_errors`
-before the glob match, since the gate cannot enumerate the matches. A
-disabled allowlisted repo with `gpgkey=` is also rejected; the trust-anchor
-rewrite is not gated on `enabled=`.
+wildcard override (`[*]\ngpgkey=…`) is rejected once, by
+`glob_override_errors`, since the gate cannot enumerate the matches. A
+disabled repo with `gpgkey=` is also rejected -- allowlisted or not; the
+trust-anchor check is not gated on `enabled=` or allowlist membership, so a
+base-image `.repo` that ships `gpgkey=` for an id with no
+`[repositories.gpgkeys]` entry fails the build.
 
 The check fires at three call sites in `main()`:
 

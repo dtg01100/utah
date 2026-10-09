@@ -160,8 +160,10 @@ signature verification is disabled).
 A third axis, the **trust anchor**, is gated by `[repositories.gpgkeys]` (#617).
 `gpgkey=` rewrites where the repository fetches its signing key from; an unpinned
 entry lets a drop-in reroute the trust anchor to an attacker-controlled key
-server and accept any signature. An allowlisted repository that sets `gpgkey=`
-must declare every key URL in `[repositories.gpgkeys]`; a drop-in
+server and accept any signature. Any repository section that sets `gpgkey=`
+must declare every key URL in `[repositories.gpgkeys]` -- this applies to every
+`.repo` the gate scans, including disabled and non-allowlisted ones, so a base
+image `.repo` shipping `gpgkey=` for an unpinned id fails the build; a drop-in
 (`/etc/dnf/repos.override.d` or `/usr/share/dnf5/repos.override.d`) must not
 set `gpgkey=` on any section, since the gate cannot know which keys the
 underlying `.repo` shipped. A `[repositories.gpgkeys]` entry for a repository

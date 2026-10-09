@@ -716,8 +716,6 @@ def glob_override_errors(
     parser: configparser.ConfigParser,
     source: str,
     partial_override: bool,
-    *,
-    expected_gpgkeys: dict[str, tuple[str, ...]] | None = None,
 ) -> list[str]:
     """Gate a wildcard override section, which applies to every matching repo id.
 
@@ -752,10 +750,6 @@ def glob_override_errors(
         section_name, parser, source,
         subject=f"Wildcard repository override '{section_name}' in {source}",
     ))
-    if expected_gpgkeys is not None:
-        errors.extend(repo_gpgkey_pin_errors(
-            section_name, parser, source, expected_gpgkeys, is_override=True,
-        ))
     return errors
 
 
@@ -783,10 +777,11 @@ def check_repo_sections(
     glob_override_errors instead (#524).
 
     gpgkey= is checked before the early `continue` branches: a drop-in that
-    sets gpgkey= on a named repo id (or one that names an id the gate
-    observed as disabled) is rejected with the gpgkey-pin error, and a
-    wildcard override is rejected by glob_override_errors before it returns
-    (#617). The check is skipped when `expected_gpgkeys` is None, which
+    sets gpgkey= on a named repo id is rejected with the gpgkey-pin error. This
+    runs for every named section, including disabled and non-allowlisted ones,
+    so any reposdir .repo that ships gpgkey= for an id without a
+    [repositories.gpgkeys] entry fails the gate. A wildcard override is
+    rejected once, by glob_override_errors (#617). The check is skipped when `expected_gpgkeys` is None, which
     matches the existing skip semantics for the other pin maps.
     """
     errors: list[str] = []
@@ -796,7 +791,12 @@ def check_repo_sections(
         # checked against the manifest; any gpgkey= in an override is
         # forbidden, since overrides are partial and the gate cannot know
         # which keys the underlying repo shipped (#617).
-        if expected_gpgkeys is not None and parser.has_option(section_name, "gpgkey"):
+        is_glob_override = is_override and bool(GLOB_CHARS_RE.search(section_name))
+        if (
+            expected_gpgkeys is not None
+            and not is_glob_override
+            and parser.has_option(section_name, "gpgkey")
+        ):
             errors.extend(repo_gpgkey_pin_errors(
                 section_name, parser, source, expected_gpgkeys, is_override=is_override,
             ))
@@ -805,12 +805,9 @@ def check_repo_sections(
         partial_override = is_override and not any(
             parser.has_option(section_name, key) for key in ORIGIN_KEYS
         )
-        if is_override and GLOB_CHARS_RE.search(section_name):
+        if is_glob_override:
             errors.extend(
-                glob_override_errors(
-                    section_name, parser, source, partial_override,
-                    expected_gpgkeys=expected_gpgkeys,
-                )
+                glob_override_errors(section_name, parser, source, partial_override)
             )
             continue
         if partial_override and not parser.has_option(section_name, "enabled"):

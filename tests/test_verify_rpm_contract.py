@@ -1442,9 +1442,9 @@ class SupplyChainTests(unittest.TestCase):
                               ("https://nvidia.github.io/libnvidia-container/gpgkey",)},
             is_override=True,
         )
-        self.assertTrue(
-            any("gpgkey" in e and "Wildcard" in e for e in errors), errors,
-        )
+        gpgkey_errors = [e for e in errors if "gpgkey" in e]
+        self.assertEqual(len(gpgkey_errors), 1, errors)
+        self.assertIn("Wildcard", gpgkey_errors[0])
 
     def test_check_repo_sections_passes_when_gpgkey_matches_pin(self) -> None:
         parser = configparser.ConfigParser(interpolation=None)
