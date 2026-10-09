@@ -548,6 +548,18 @@ utah-packages = ["gpgcheck", "repo_gpgcheck"]
 # so only package signature verification (gpgcheck) is disabled here.
 nvidia-container-toolkit = ["gpgcheck"]
 
+# Pinned RPM GPG key URLs per allowlisted repository. verify-rpm-contract.py
+# rejects gpgkey= on an allowlisted repository that is not named here, and
+# forbids gpgkey= entirely in dnf5 repo-override drop-ins (#617). A drop-in
+# cannot tell which keys the underlying .repo shipped, so a gpgkey= in an
+# override is always rejected even when the id is allowlisted.
+# utah-packages is absent: packages/utah-packages.repo declares no gpgkey=,
+# because the OCI pin is the trust anchor. Adding a gpgkey= to utah-packages
+# in any .repo file is rejected.
+[repositories.gpgkeys]
+public-hummingbird-x86_64-rpms = ["file:///etc/pki/rpm-gpg/RPM-GPG-KEY-redhat-release-2"]
+nvidia-container-toolkit = ["https://nvidia.github.io/libnvidia-container/gpgkey"]
+
 # GNOME desktop components the utah-packages factory rebuilds with the .bfin
 # release tag, so a Bluefin image is never built against Hummingbird's server
 # packages. Only GNOME desktop components are listed: their factory build is the
