@@ -83,6 +83,7 @@ jobs:
         # main and the ref read served a stale cache.
         if: ${{ inputs.target_sha != '' }}
         env:
+          GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           GITHUB_SHA: ${{ github.sha }}
           TARGET_SHA: ${{ inputs.target_sha }}
