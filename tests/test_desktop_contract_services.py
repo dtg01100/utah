@@ -495,6 +495,21 @@ class ServiceMaskParityTests(unittest.TestCase):
             self.assertTrue(module.unit_masked("bootc-fetch-apply-updates.timer", root=root))
             self.assertFalse(module.unit_masked("bootc-fetch-apply-updates.service", root=root))
 
+            # A symlink to anything other than /dev/null is not a mask: an
+            # alias of a real unit can still run.
+            (lib_dir / "real-unit.timer").write_text("[Timer]\n")
+            (lib_dir / "aliased.timer").symlink_to("real-unit.timer")
+            self.assertFalse(module.unit_masked("aliased.timer", root=root))
+
+            # A mask under /etc/systemd/system counts too, and an alias
+            # there does not.
+            etc_dir = root / "etc/systemd/system"
+            etc_dir.mkdir(parents=True)
+            (etc_dir / "etc-masked.timer").symlink_to("/dev/null")
+            self.assertTrue(module.unit_masked("etc-masked.timer", root=root))
+            (etc_dir / "etc-aliased.timer").symlink_to(lib_dir / "real-unit.timer")
+            self.assertFalse(module.unit_masked("etc-aliased.timer", root=root))
+
     def test_unit_masked_helper_systemctl_fallback(self):
         import importlib.util
         from unittest.mock import patch
