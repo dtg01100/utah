@@ -17,7 +17,7 @@ ARG BREW_IMAGE_SHA=sha256:9c51c948d48de69b0fadfb3d97dc1a7eaa91a4e5a2af7b2b6626fd
 # wait on a Common release. It is the multi-arch index digest: the contents are
 # architecture-independent. Renovate keeps it current like the pins above.
 ARG WALLPAPERS_IMAGE=ghcr.io/projectbluefin/bluefin-wallpapers-gnome
-ARG WALLPAPERS_IMAGE_SHA=sha256:16e66ad31b33765d40fd00b558d977703f90e96fee77a5027aa7787a3aedacf0
+ARG WALLPAPERS_IMAGE_SHA=sha256:af602a4c2109a186d4ee928dd523d8e1d72d4128e531c1f67ae56ad9316d257c
 # Generic shell for the throwaway artwork stage: Red Hat Hardened Images'
 # signed core-runtime builder (bash, curl, coreutils, dnf), pinned to its
 # multi-arch index digest. CI verifies the signature against Red Hat's key
