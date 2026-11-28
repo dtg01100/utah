@@ -432,7 +432,7 @@ sudo bash iso/raw/build-raw-image.sh localhost/utah-raw:local \
 sudo bash iso/raw/bake-flatpaks.sh localhost/utah-raw:local output/medium.raw   # optional
 sudo env UTAH_RAW_BTRFS_COMPRESS=zstd:3 \
   bash iso/raw/shrink-raw-image.sh localhost/utah-raw:local output/medium.raw
-sudo chown "$USER" output/medium.raw
+sudo chown -R "$USER" output
 ```
 
 `dd` the shrunk `medium.raw` to a USB stick (UEFI only), or build the hybrid
@@ -449,9 +449,12 @@ password and there is no sshd. The ISO needs Secure Boot off.
 
 Boot the medium read-only next to a blank target disk of at least 48 GB
 (the medium's partitions must fit). This needs a graphical session for
-`-display gtk`; use `-display vnc=:1` over SSH. The firmware paths are
-Homebrew's QEMU (`brew install qemu`, the usual one on Bluefin/Utah hosts);
-on Fedora use `/usr/share/edk2/ovmf/OVMF_CODE.fd` and `OVMF_VARS.fd`:
+`-display gtk`. Over SSH, replace `-device virtio-vga-gl -display gtk,gl=on`
+in the command with `-device virtio-vga -display vnc=:1`: QEMU refuses the
+`-gl` device on a display without OpenGL, and VNC has none. The firmware
+paths are Homebrew's QEMU (`brew install qemu`, the usual one on
+Bluefin/Utah hosts); on Fedora use `/usr/share/edk2/ovmf/OVMF_CODE.fd` and
+`OVMF_VARS.fd`:
 
 ```bash
 cd output
